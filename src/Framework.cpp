@@ -2,7 +2,13 @@
 // Created by prodigg on 02.06.26.
 //
 #include "Framework.h"
+
+#include <fstream>
+#include <iostream>
 #include <AdsLib/AdsLib.h>
+#include <nlohmann/json.hpp>
+
+using json = nlohmann::json;
 
 runtimeEntity_t::runtimeEntity_t(const std::string_view entityName) :
 m_entityID(getRuntime().generateEntityID(*this, entityName)),
@@ -47,6 +53,57 @@ IoID_t IOProvider_t::registerOutput(const std::string &outputName, const IOType_
 
 IOProvider_t::IOProvider_t(const EntityID_t entityID)
     : m_entityID(entityID) {
+}
+
+void config_t::generateConfig(const std::string_view path, const std::vector<IOEntityRegistry_t> &ioMap) {
+    if (path.empty())
+        throw std::runtime_error("configuration file name is empty");
+
+    json config = {
+        {
+            "AdsConfig",
+            {
+                {"AmsNetIdRemote", ""},
+                {"AmsNetIdLocal", ""},
+                {"RemoteIpV4", ""},
+                {"RemoteAdsPort", 851}
+            }
+        },
+        {
+            "AdsSymbolMapping",
+            {
+            }
+        }
+    };
+
+
+    for (const auto &[entityID, ioMap_]: ioMap) {
+        std::string entityName = Runtime_t::GetInstance().getEntityName(entityID);
+        for (const auto& entry: ioMap_)
+            config.at("AdsSymbolMapping").emplace(entityName + "::" + entry.ioName, "");
+    }
+
+
+    std::ofstream file{std::string(path)};
+    if (!file.is_open())
+        throw std::runtime_error("could not open configuration file");
+
+    file << config.dump();
+
+    file.close();
+}
+
+void config_t::applyConfig(const std::string_view path, std::vector<IOEntityRegistry_t> &ioMap) {
+    if (path.empty())
+        throw std::runtime_error("configuration file name is empty");
+
+    std::ifstream file{std::string(path)};
+
+    if (!file.is_open()) {
+        throw std::runtime_error("could not open configuration file ");
+    }
+
+    json configData = json::parse(file);
 }
 
 inline IOHandler_t& IOHandler_t::GetInstance()  {
@@ -138,13 +195,20 @@ Runtime_t& Runtime_t::GetInstance() {
     return inst;
 }
 
-void Runtime_t::initializeRuntime(std::string& ipV4, const AmsNetId remoteNetID, const AmsNetId localNetID, const uint16_t port) {
+void Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) {
     for (const runtimeEntityEntry & entry: m_entries) {
         entry.entity.init();
     }
+    if (generateConfig) {
+        IOHandler_t::GetInstance().generateConfig(configPath);
+        std::cout << "Config written to: " << configPath << std::endl;
+        exit(EXIT_SUCCESS);
+    }
+
     //IOHandler_t::GetInstance().readConfig("/path");
-    IOHandler_t::GetInstance().m_ioToAdsMap.emplace("testEntity::test", "NodeRed.bIsLightOn");
-    IOHandler_t::GetInstance().initialize(ipV4, remoteNetID, localNetID, port);
+
+    //IOHandler_t::GetInstance().m_ioToAdsMap.emplace("testEntity::test", "NodeRed.bIsLightOn");
+    //IOHandler_t::GetInstance().initialize(ipV4, remoteNetID, localNetID, port);
 }
 
 void Runtime_t::runtimeStart() const {

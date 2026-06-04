@@ -8,7 +8,6 @@
 #include <stack>
 
 #include "AdsVariableList.h"
-#include "Framework.h"
 #include <algorithm>
 #include <cstring>
 #include <ranges>
@@ -117,6 +116,13 @@ struct writeRequestEntry_t {
  * 6. Runtime starts normal execution flow
  */
 
+class config_t {
+public:
+    static void generateConfig(std::string_view path, const std::vector<IOEntityRegistry_t>& ioMap);
+    void applyConfig(std::string_view path, std::vector<IOEntityRegistry_t>& ioMap);
+
+};
+
 /*!
  * @brief allows machines to register needed variables for mapping. Is the mapping to ADS.
  * @details this class includes a buffer that stores write request for next write all values that are registered as
@@ -170,7 +176,7 @@ protected:
     // for runtime
     void initialize(std::string& ipV4, AmsNetId remoteNetID, AmsNetId localNetID, uint16_t port);
     void readWriteData();
-    void generateConfig(std::string path);
+    void generateConfig(const std::string_view path) const {config_t::generateConfig(path, m_ioMap);};
     void readConfig(std::string path);
 
     IOHandler_t() = default;
@@ -229,9 +235,14 @@ public:
     static Runtime_t& GetInstance();
 
     /*!
+     *
+     */
+    static void generateConfig(const std::string_view path) {IOHandler_t::GetInstance().generateConfig(path);}
+
+    /*!
      * @brief configures IOHandler and makes the runtime ready
      */
-    void initializeRuntime(std::string& ipV4, AmsNetId remoteNetID, AmsNetId localNetID , uint16_t port);
+    void initializeRuntime(std::string_view configPath, bool generateConfig);
 
     /*!
      * @brief start the runtime, requires to first initialize the runtime and creating all the runtime entities
