@@ -71,16 +71,16 @@ void config_t::generateConfig(const std::string_view path, const std::vector<IOE
         },
         {
             "AdsSymbolMapping",
-            {
-            }
+            {}
         }
     };
+
 
 
     for (const auto &[entityID, ioMap_]: ioMap) {
         std::string entityName = Runtime_t::GetInstance().getEntityName(entityID);
         for (const auto& entry: ioMap_)
-            config.at("AdsSymbolMapping").emplace(entityName + "::" + entry.ioName, "");
+            config.at("AdsSymbolMapping").push_back({{entityName + "::" + entry.ioName, ""},{"type", entry.type}});
     }
 
 
@@ -173,9 +173,9 @@ void IOHandler_t::initialize(std::string& ipV4, AmsNetId remoteNetID, AmsNetId l
         for (const IOMapEntry_t & entry: ioMap) {
             std::string fullyQualifiedName = entryName + "::" + entry.ioName;
             if (entry.ioID >> 31 == 1)
-                readList.push_back(m_ioToAdsMap.at(fullyQualifiedName));
+                readList.push_back(m_ioToAdsMap.at(fullyQualifiedName).adsName);
             else
-                writeList.push_back(m_ioToAdsMap.at(fullyQualifiedName));
+                writeList.push_back(m_ioToAdsMap.at(fullyQualifiedName).adsName);
         }
     }
 

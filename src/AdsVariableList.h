@@ -88,6 +88,7 @@ struct AdsVariableList {
             }
             pdbf += m_symboleEntrys.at(i).size;
         }
+        throw std::out_of_range("symbol name unknown");
     }
 
     void setSymbolData(const std::string& name, void *data, size_t length, size_t begin = 0) {

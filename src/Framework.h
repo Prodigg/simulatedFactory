@@ -153,7 +153,7 @@ protected:
 
         size_t length = sizeof(T);
         const void* ptr = m_adsRead->getSymboleData(
-            m_ioToAdsMap.at(getFullyQualifiedName(entityId, inputIoID)), &length);
+            m_ioToAdsMap.at(getFullyQualifiedName(entityId, inputIoID)).adsName, &length);
 
         T returnValue;
         std::memcpy(&returnValue, ptr, sizeof(T));
@@ -189,7 +189,12 @@ private:
     std::optional<AdsDevice> m_route;
 
     std::string getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID);
-    std::unordered_map<std::string, std::string> m_ioToAdsMap;
+
+    struct ioToAdsMapElement {
+        std::string adsName;
+        IOType_t type = IOType_t::INVALID;
+    };
+    std::unordered_map<std::string, ioToAdsMapElement> m_ioToAdsMap;
 };
 
 /*!
