@@ -1,0 +1,14 @@
+{
+    "AdsConfig": {
+        "AmsNetIdLocal": "192.168.1.126.1.1",
+        "AmsNetIdRemote": "5.109.7.180.1.1",
+        "RemoteAdsPort": 851,
+        "RemoteIpV4": "plc-raphael.localdomain"
+    },
+    "AdsSymbolMapping": [
+        {
+            "testEntity::test": "NodeRed.bIsLightOn",
+            "type": "BOOL"
+        }
+    ]
+}

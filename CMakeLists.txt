@@ -9,6 +9,7 @@ add_executable(simulatedFactory src/main.cpp
         src/Framework.h
         src/Framework.cpp
         src/AdsVariableList.h
+        src/osSpecific/LinuxSpecific.h
 )
 
 find_package(AdsLib REQUIRED)

@@ -1,34 +1,34 @@
 #include <iostream>
 #include "Framework.h"
 
-class testEntity_t : public runtimeEntity_t {
+class testEntity_t : public sim::framework::runtimeEntity_t {
     public:
     testEntity_t() : runtimeEntity_t("testEntity") {};
     void cycle() override {
-        std::cout << "testEntity::test: " << getIOProvider().readInput<bool>(testInput) << "\n";
     }
     void init() override {
         std::cout << "Initialized with ID: " << getEntityID() << "\n";
-        std::string inputName = "test";
-        testInput = this->getIOProvider().registerInput(inputName, IOType_t::BOOL);
+        const std::string inputName = "test";
+        testInput = this->getIOProvider().registerInput(inputName, sim::framework::IOType_t::BOOL);
+        this->getTerminalProvider().registerCMD("currentTestInput", [&](std::string_view input) {
+            std::cout << "testEntity::test: " << getIOProvider().readInput<bool>(testInput) << "\n";
+        });
     }
     private:
-    IoID_t testInput = 0;
+    sim::framework::IoID_t testInput = 0;
 };
 
-int main() {
+int main(int argc, char** argv) {
     // ensure both are ready
-    Runtime_t::GetInstance();
-    IOHandler_t::GetInstance();
+    sim::framework::Runtime_t::GetInstance();
+    sim::framework::IOHandler_t::GetInstance();
 
     testEntity_t testEntity;
-    Runtime_t::GetInstance().initializeRuntime("/tmp/testDir/Config.json", false);
 
-    /*
-    std::string ipV4 = "plc-raphael.localdomain";
-    Runtime_t::GetInstance().initializeRuntime(ipV4, {5,109,7,180,1,1}, {192,168,1,126,1,1}, 851);
-    */
-    Runtime_t::GetInstance().runtimeStart();
+    //TODO: make these two args controllable via cli
+    sim::framework::Runtime_t::GetInstance().initializeRuntime("/home/prodigg/CLionProjects/simulatedFactory/Config.json", false);
+
+    sim::framework::Runtime_t::GetInstance().runtimeStart();
 
     std::string data;
     while (true) {

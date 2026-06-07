@@ -7,27 +7,38 @@
 #include <iostream>
 #include <AdsLib/AdsLib.h>
 #include <nlohmann/json.hpp>
+#include <oneapi/tbb/task_group.h>
+
+#if __linux__
+#include "osSpecific/LinuxSpecific.h"
+#else
+#error "Unsupported platform"
+#endif
 
 using json = nlohmann::json;
 
-runtimeEntity_t::runtimeEntity_t(const std::string_view entityName) :
-m_entityID(getRuntime().generateEntityID(*this, entityName)),
-m_ioProvider(Runtime_t::GetInstance().getIOProvider(m_entityID)) {
+sim::framework::runtimeEntity_t::runtimeEntity_t(const std::string_view entityName) :
+m_context(getRuntime().registerEntity(*this, entityName)) {
+    m_entityID = m_context.entityID;
 }
 
-IOHandler_t & runtimeEntity_t::getIOHandler() {
+sim::framework::IOHandler_t & sim::framework::runtimeEntity_t::getIOHandler() {
     return IOHandler_t::GetInstance();
 }
 
-Runtime_t & runtimeEntity_t::getRuntime() {
+sim::framework::Runtime_t & sim::framework::runtimeEntity_t::getRuntime() {
     return Runtime_t::GetInstance();
 }
 
-IOProvider_t & runtimeEntity_t::getIOProvider() const {
-    return m_ioProvider;
+sim::framework::IOProvider_t & sim::framework::runtimeEntity_t::getIOProvider() const {
+    return m_context.ioProvider;
 }
 
-std::string IOHandler_t::getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID) {
+sim::framework::TerminalProvider_t & sim::framework::runtimeEntity_t::getTerminalProvider() const {
+    return m_context.terminalProvider;
+}
+
+std::string sim::framework::IOHandler_t::getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID) {
     std::string_view ioName;
     if (const auto it = std::ranges::find_if(m_ioMap,[entityId](const IOEntityRegistry_t& entry) { return entityId == entry.entityID;}); it != m_ioMap.end())
         if (const auto it2 = std::ranges::find_if(it->ioMap, [inputIoID](const IOMapEntry_t& entry) { return inputIoID == entry.ioID;}); it2 != it->ioMap.end())
@@ -43,19 +54,99 @@ std::string IOHandler_t::getFullyQualifiedName(EntityID_t entityId, IoID_t input
     return fullyQualifiedName;
 }
 
-IoID_t IOProvider_t::registerInput(const std::string& inputName, const IOType_t type) const {
+sim::framework::IoID_t sim::framework::IOProvider_t::registerInput(const std::string& inputName, const IOType_t type) const {
     return IOHandler_t::GetInstance().registerInput(m_entityID, inputName, type);
 }
 
-IoID_t IOProvider_t::registerOutput(const std::string &outputName, const IOType_t type) const {
+sim::framework::IoID_t sim::framework::IOProvider_t::registerOutput(const std::string &outputName, const IOType_t type) const {
     return IOHandler_t::GetInstance().registerOutput(m_entityID, outputName, type);
 }
 
-IOProvider_t::IOProvider_t(const EntityID_t entityID)
+sim::framework::IOProvider_t::IOProvider_t(const EntityID_t entityID)
     : m_entityID(entityID) {
 }
 
-void config_t::generateConfig(const std::string_view path, const std::vector<IOEntityRegistry_t> &ioMap) {
+void sim::framework::TerminalHandler_t::registerCMD(EntityID_t entityId, std::string_view cmdName, std::function<void(std::string)> func) {
+    // find registry of entity
+    if (auto it = std::ranges::find_if(
+        m_entityCMDRegistry,
+        [entityId](const entityCMDRegistry_t &elem) -> bool { return elem.entityID == entityId;});
+        it != m_entityCMDRegistry.end()) {
+
+        // check if element already exists
+        if (std::ranges::find_if(it->cmds, [cmdName](const registeredCMD_t &elem) { return elem.cmdName == std::string(cmdName);}) == it->cmds.end())
+            throw std::runtime_error(std::string("cmd name is already registered. Name: ") + cmdName);
+
+        it->cmds.emplace_back(std::string(cmdName), func);
+        return;
+    }
+
+    // construct new entry
+    std::vector<registeredCMD_t> tmp({ {std::string(cmdName), func}});
+    m_entityCMDRegistry.emplace_back(entityId, tmp);
+}
+
+void sim::framework::TerminalHandler_t::cycle() {
+    if (!internal::line_available())
+        return; // nothing to do
+    std::string cmd;
+    std::getline(std::cin, cmd);
+
+    if (cmd.empty())
+        return;
+
+    if (cmd == "help") {
+        std::cout << "Usage: [module name] [cmd name] [args]" << std::endl;
+        return;
+    }
+
+    //TODO: add help cmd
+
+    const size_t moduleDelimiterPos = cmd.find_first_of(' ');
+
+    if (moduleDelimiterPos == std::string::npos) {
+        std::cerr << "Command malformed.\n" << "Usage: [module name] [cmd name] [args]" << std::endl;
+        return;
+    }
+
+    const std::string moduleName = cmd.substr(0, moduleDelimiterPos);
+    cmd.erase(0, moduleDelimiterPos + 1);
+
+    EntityID_t entityID;
+    // find module name
+    try {
+        entityID = Runtime_t::GetInstance().getEntityID(moduleName);
+    } catch (std::runtime_error e) {
+        std::cerr << "Failed to find module name: " << moduleName << std::endl;
+        return;
+    }
+
+    const auto& it = std::ranges::find_if(m_entityCMDRegistry, [entityID](const entityCMDRegistry_t& elem){return elem.entityID == entityID; });
+    if (it == m_entityCMDRegistry.end()) {
+        std::cerr << "module does not have any registered cmds" << std::endl;
+        return;
+    }
+
+    // parse cmd name
+    std::string cmdName;
+    const size_t cmdNameDelimiterPos = cmd.find_first_of(' ');
+    if (cmdNameDelimiterPos == std::string::npos) {
+        cmdName = cmd;
+        cmd.clear();
+    } else {
+        cmdName = cmd.substr(0, cmdNameDelimiterPos);
+        cmd.erase(0, cmdNameDelimiterPos + 1);
+    }
+
+    // find cmd name and call it
+    if (const auto it2 = std::ranges::find_if(it->cmds, [cmdName](const registeredCMD_t &elem) {return elem.cmdName == cmdName;}); it2 != it->cmds.end()) {
+        it2->func(cmd);
+        return;
+    }
+    std::cerr << "cmd name is unknown for the selected module" << std::endl;
+}
+
+void sim::framework::config_t::generateConfig(const std::string_view path, const std::vector<IOEntityRegistry_t> &ioMap) {
     if (path.empty())
         throw std::runtime_error("configuration file name is empty");
 
@@ -93,7 +184,7 @@ void config_t::generateConfig(const std::string_view path, const std::vector<IOE
     file.close();
 }
 
-void config_t::applyConfig(const std::string_view path, std::unordered_map<std::string, ioToAdsMapElement_t>& ioMap) {
+void sim::framework::config_t::applyConfig(const std::string_view path, std::unordered_map<std::string, ioToAdsMapElement_t>& ioMap) {
     if (path.empty())
         throw std::runtime_error("configuration file name is empty");
 
@@ -148,7 +239,7 @@ void config_t::applyConfig(const std::string_view path, std::unordered_map<std::
     }
 }
 
-std::string config_t::ioTypeToString(IOType_t type) {
+std::string sim::framework::config_t::ioTypeToString(IOType_t type) {
     switch (type) {
         case IOType_t::INVALID:
             throw std::runtime_error("invalid IOType_t");
@@ -179,7 +270,7 @@ std::string config_t::ioTypeToString(IOType_t type) {
     }
 }
 
-IOType_t config_t::stringToIoType(const std::string_view type) {
+sim::framework::IOType_t sim::framework::config_t::stringToIoType(const std::string_view type) {
     if (type == "BOOL")
         return IOType_t::BOOL;
     if (type == "INT8")
@@ -207,12 +298,12 @@ IOType_t config_t::stringToIoType(const std::string_view type) {
         std::string("Unknown IOType_t string: ") + std::string(type));
 }
 
-inline IOHandler_t& IOHandler_t::GetInstance()  {
+inline sim::framework::IOHandler_t& sim::framework::IOHandler_t::GetInstance()  {
     static IOHandler_t inst; // created on first call
     return inst;
 }
 
-IOHandler_t::~IOHandler_t() {
+sim::framework::IOHandler_t::~IOHandler_t() {
     if (m_adsWrite)
         m_adsWrite.reset();
     if (m_adsRead)
@@ -221,7 +312,7 @@ IOHandler_t::~IOHandler_t() {
         m_route.reset();
 }
 
-IoID_t IOHandler_t::registerInput(const EntityID_t entityId, const std::string& inputName, IOType_t type) {
+sim::framework::IoID_t sim::framework::IOHandler_t::registerInput(const EntityID_t entityId, const std::string& inputName, IOType_t type) {
     if (m_adsRead)
         throw std::runtime_error("IOHandler already initialized, unable to register new inputs");
 
@@ -239,7 +330,7 @@ IoID_t IOHandler_t::registerInput(const EntityID_t entityId, const std::string& 
     return static_cast<IoID_t>(1) | (1 << 31);
 }
 
-IoID_t IOHandler_t::registerOutput(EntityID_t entityId, std::string outputName, IOType_t type) {
+sim::framework::IoID_t sim::framework::IOHandler_t::registerOutput(EntityID_t entityId, std::string outputName, IOType_t type) {
     if (m_adsWrite)
         throw std::runtime_error("IOHandler already initialized, unable to register new inputs");
 
@@ -259,7 +350,7 @@ IoID_t IOHandler_t::registerOutput(EntityID_t entityId, std::string outputName, 
     return 1;
 }
 
-void IOHandler_t::initialize(std::string_view ipV4, AmsNetId remoteNetID, const AmsNetId localNetID, uint16_t port) {
+void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId remoteNetID, const AmsNetId localNetID, uint16_t port) {
 
     // initialize ads route
     bhf::ads::SetLocalAddress(localNetID);
@@ -284,26 +375,26 @@ void IOHandler_t::initialize(std::string_view ipV4, AmsNetId remoteNetID, const 
     m_adsRead.emplace(*m_route, readList);
 }
 
-void IOHandler_t::readWriteData() {
+void sim::framework::IOHandler_t::readWriteData() {
     if (!m_adsWrite || !m_adsRead)
         throw std::runtime_error("readWriteData called before initialising ads");
     m_adsWrite->write();
     m_adsRead->read();
 }
 
-void IOHandler_t::readConfig(const std::string_view path) {
+void sim::framework::IOHandler_t::readConfig(const std::string_view path) {
     config_t config;
     config.applyConfig(path, m_ioToAdsMap);
 
     initialize(config.remoteIpV4(), config.getRemoteNetId(), config.getLocalNetId(), config.remotePort());
 }
 
-Runtime_t& Runtime_t::GetInstance() {
+sim::framework::Runtime_t& sim::framework::Runtime_t::GetInstance() {
     static Runtime_t inst; // created on first call
     return inst;
 }
 
-void Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) const {
+void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) const {
     for (const runtimeEntityEntry & entry: m_entries) {
         entry.entity.init();
     }
@@ -319,30 +410,40 @@ void Runtime_t::initializeRuntime(std::string_view configPath, bool generateConf
     //IOHandler_t::GetInstance().initialize(ipV4, remoteNetID, localNetID, port);
 }
 
-void Runtime_t::runtimeStart() const {
+void sim::framework::Runtime_t::runtimeStart() {
     while (true) {
         IOHandler_t::GetInstance().readWriteData();
+        m_terminalHandler.cycle();
         for (const runtimeEntityEntry & entry: m_entries) {
             entry.entity.cycle();
         }
     }
 }
 
-EntityID_t Runtime_t::generateEntityID(runtimeEntity_t &instance, const std::string_view instanceName) {
-    m_entries.emplace_back(m_entityIdCounter, std::string(instanceName), instance, IOProvider_t(m_entityIdCounter));
-    return m_entityIdCounter++;
+sim::framework::runtimeEntityContext_t& sim::framework::Runtime_t::registerEntity(runtimeEntity_t &instance, const std::string_view instanceName) {
+    m_entries.emplace_back(
+        m_entityIdCounter,
+        std::string(instanceName),
+        instance,
+        IOProvider_t(m_entityIdCounter),
+        TerminalProvider_t(m_entityIdCounter, m_terminalHandler));
+
+    m_entries.back().context.emplace(
+        m_entityIdCounter++,
+        m_entries.back().ioProvider,
+        m_entries.back().terminalProvider);
+
+    return m_entries.back().context.value();
 }
 
-IOProvider_t& Runtime_t::getIOProvider(const EntityID_t entityID) {
-    for (runtimeEntityEntry & entry : m_entries) {
-        if (entry.entityID == entityID)
-            return entry.ioProvider;
-    }
-    throw std::out_of_range("Entity ID not found");
-}
-
-std::string Runtime_t::getEntityName(EntityID_t entityID) {
-    if (auto it = std::ranges::find_if(m_entries, [entityID](const auto& entry) { return entry.entityID == entityID; }); it != m_entries.end())
+std::string sim::framework::Runtime_t::getEntityName(EntityID_t entityID) {
+    if (const auto it = std::ranges::find_if(m_entries, [entityID](const auto& entry) { return entry.entityID == entityID; }); it != m_entries.end())
         return it->entityName;
     throw std::runtime_error("Entity ID not found");
+}
+
+sim::framework::EntityID_t sim::framework::Runtime_t::getEntityID(std::string entityName) {
+    if (const auto it = std::ranges::find_if(m_entries, [entityName](const auto& entry) { return entry.entityName == entityName; }); it != m_entries.end())
+        return it->entityID;
+    throw std::runtime_error("Entity name not found");
 }
