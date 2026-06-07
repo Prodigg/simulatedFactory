@@ -116,11 +116,60 @@ struct writeRequestEntry_t {
  * 6. Runtime starts normal execution flow
  */
 
+struct ConfigNetId_t {
+    uint8_t _1 = 0;
+    uint8_t _2 = 0;
+    uint8_t _3 = 0;
+    uint8_t _4 = 0;
+    uint8_t _5 = 0;
+    uint8_t _6 = 0;
+
+    explicit ConfigNetId_t(std::string str) {
+        _1 = toNum(str);
+        _2 = toNum(str);
+        _3 = toNum(str);
+        _4 = toNum(str);
+        _5 = toNum(str);
+        _6 = toNum(str);
+    }
+
+    ConfigNetId_t() = default;
+
+    operator AmsNetId () const {return {_1, _2, _3, _4, _5, _6};}
+private:
+    static uint8_t toNum (std::string& str) {
+        size_t const delimiter =  str.find_first_of('.', 0);
+        if (delimiter == std::string::npos) {
+            return std::stoi(str);
+        }
+        const uint8_t result = std::stoi(str.substr(0, delimiter));
+        str.erase(0, delimiter + 1);
+        return result;
+    }
+};
+
+struct ioToAdsMapElement_t {
+    std::string adsName;
+    IOType_t type = IOType_t::INVALID;
+};
+
 class config_t {
 public:
     static void generateConfig(std::string_view path, const std::vector<IOEntityRegistry_t>& ioMap);
-    void applyConfig(std::string_view path, std::vector<IOEntityRegistry_t>& ioMap);
+    void applyConfig(std::string_view path, std::unordered_map<std::string, ioToAdsMapElement_t>& ioMap);
 
+    [[nodiscard]] inline AmsNetId getLocalNetId() const {return m_localNetId;};
+    [[nodiscard]] inline AmsNetId getRemoteNetId() const {return m_remoteNetId;};
+    [[nodiscard]] inline std::string remoteIpV4() const {return m_remoteIpV4;};
+    [[nodiscard]] inline uint16_t remotePort() const {return m_remotePort;};
+private:
+    static std::string ioTypeToString(IOType_t type);
+    static IOType_t stringToIoType(std::string_view type);
+
+    ConfigNetId_t m_localNetId;
+    ConfigNetId_t m_remoteNetId;
+    std::string m_remoteIpV4;
+    uint16_t m_remotePort = 0;
 };
 
 /*!
@@ -174,10 +223,15 @@ protected:
 
 
     // for runtime
-    void initialize(std::string& ipV4, AmsNetId remoteNetID, AmsNetId localNetID, uint16_t port);
+    void initialize(std::string_view ipV4, AmsNetId remoteNetID, AmsNetId localNetID, uint16_t port);
     void readWriteData();
     void generateConfig(const std::string_view path) const {config_t::generateConfig(path, m_ioMap);};
-    void readConfig(std::string path);
+
+    /*!
+     * @brief read config and initialize IOHandler_t
+     * @param path path to config
+     */
+    void readConfig(std::string_view path);
 
     IOHandler_t() = default;
 private:
@@ -190,11 +244,8 @@ private:
 
     std::string getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID);
 
-    struct ioToAdsMapElement {
-        std::string adsName;
-        IOType_t type = IOType_t::INVALID;
-    };
-    std::unordered_map<std::string, ioToAdsMapElement> m_ioToAdsMap;
+
+    std::unordered_map<std::string, ioToAdsMapElement_t> m_ioToAdsMap;
 };
 
 /*!
@@ -247,7 +298,7 @@ public:
     /*!
      * @brief configures IOHandler and makes the runtime ready
      */
-    void initializeRuntime(std::string_view configPath, bool generateConfig);
+    void initializeRuntime(std::string_view configPath, bool generateConfig) const;
 
     /*!
      * @brief start the runtime, requires to first initialize the runtime and creating all the runtime entities

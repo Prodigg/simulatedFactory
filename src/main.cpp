@@ -22,13 +22,14 @@ int main() {
     IOHandler_t::GetInstance();
 
     testEntity_t testEntity;
-    Runtime_t::GetInstance().initializeRuntime("/tmp/testDir/Config.json", true);
+    Runtime_t::GetInstance().initializeRuntime("/tmp/testDir/Config.json", false);
 
     /*
     std::string ipV4 = "plc-raphael.localdomain";
     Runtime_t::GetInstance().initializeRuntime(ipV4, {5,109,7,180,1,1}, {192,168,1,126,1,1}, 851);
+    */
     Runtime_t::GetInstance().runtimeStart();
-*/
+
     std::string data;
     while (true) {
         std::cin >> data;

@@ -80,7 +80,7 @@ void config_t::generateConfig(const std::string_view path, const std::vector<IOE
     for (const auto &[entityID, ioMap_]: ioMap) {
         std::string entityName = Runtime_t::GetInstance().getEntityName(entityID);
         for (const auto& entry: ioMap_)
-            config.at("AdsSymbolMapping").push_back({{entityName + "::" + entry.ioName, ""},{"type", entry.type}});
+            config.at("AdsSymbolMapping").push_back({{entityName + "::" + entry.ioName, ""},{"type", ioTypeToString(entry.type)}});
     }
 
 
@@ -88,12 +88,12 @@ void config_t::generateConfig(const std::string_view path, const std::vector<IOE
     if (!file.is_open())
         throw std::runtime_error("could not open configuration file");
 
-    file << config.dump();
+    file << config.dump(4);
 
     file.close();
 }
 
-void config_t::applyConfig(const std::string_view path, std::vector<IOEntityRegistry_t> &ioMap) {
+void config_t::applyConfig(const std::string_view path, std::unordered_map<std::string, ioToAdsMapElement_t>& ioMap) {
     if (path.empty())
         throw std::runtime_error("configuration file name is empty");
 
@@ -104,6 +104,107 @@ void config_t::applyConfig(const std::string_view path, std::vector<IOEntityRegi
     }
 
     json configData = json::parse(file);
+
+    file.close();
+
+    // parse AdsConfig
+
+    if (!configData.contains("AdsConfig"))
+        throw std::runtime_error("No AdsConfig");
+
+    if (!configData.at("AdsConfig").contains("AmsNetIdLocal"))
+        throw std::runtime_error("AmsNetIdLocal not inside AdsConfig");
+    m_localNetId = ConfigNetId_t(configData.at("AdsConfig").at("AmsNetIdLocal"));
+
+    if (!configData.at("AdsConfig").contains("AmsNetIdRemote"))
+        throw std::runtime_error("AmsNetIdRemote not inside AdsConfig");
+    m_remoteNetId = ConfigNetId_t(configData.at("AdsConfig").at("AmsNetIdRemote"));
+
+    if (!configData.at("AdsConfig").contains("RemoteAdsPort"))
+        throw std::runtime_error("RemoteAdsPort not inside AdsConfig");
+    m_remotePort = configData.at("AdsConfig").at("RemoteAdsPort");
+
+    if (!configData.at("AdsConfig").contains("RemoteIpV4"))
+        throw std::runtime_error("RemoteIpV4 not inside AdsConfig");
+    m_remoteIpV4 = configData.at("AdsConfig").at("RemoteIpV4");
+
+    // parse variables
+    if (!configData.contains("AdsSymbolMapping"))
+        throw std::runtime_error("AdsSymbolMapping not inside AdsConfig");
+
+    for (const auto& element: configData.at("AdsSymbolMapping")) {
+        if (!element.contains("type"))
+            throw std::runtime_error("type missing inside AdsSymbolMapping array");
+
+        if (element.size() != 2)
+            throw std::runtime_error("element inside AdsSymbolMapping array has incorrect number of elements inside");
+
+        for (const auto& elem: element.items()) {
+            if (elem.key() != "type") {
+                ioToAdsMapElement_t tmp = {elem.value(), stringToIoType(std::string(element.at("type")))};
+                ioMap.insert_or_assign(elem.key(), std::move(tmp));
+            }
+        }
+    }
+}
+
+std::string config_t::ioTypeToString(IOType_t type) {
+    switch (type) {
+        case IOType_t::INVALID:
+            throw std::runtime_error("invalid IOType_t");
+        case IOType_t::BOOL:
+            return "BOOL";
+        case IOType_t::INT8:
+            return "INT8";
+        case IOType_t::INT16:
+            return "INT16";
+        case IOType_t::INT32:
+            return "INT32";
+        case IOType_t::INT64:
+            return "INT64";
+        case IOType_t::UINT8:
+            return "UINT8";
+        case IOType_t::UINT16:
+            return "UINT16";
+        case IOType_t::UINT32:
+            return "UINT32";
+        case IOType_t::UINT64:
+            return "UINT64";
+        case IOType_t::FLOAT32:
+            return "FLOAT32";
+        case IOType_t::FLOAT64:
+            return "FLOAT64";
+        default:
+            throw std::runtime_error("Unknown IOType_t type");
+    }
+}
+
+IOType_t config_t::stringToIoType(const std::string_view type) {
+    if (type == "BOOL")
+        return IOType_t::BOOL;
+    if (type == "INT8")
+        return IOType_t::INT8;
+    if (type == "INT16")
+        return IOType_t::INT16;
+    if (type == "INT32")
+        return IOType_t::INT32;
+    if (type == "INT64")
+        return IOType_t::INT64;
+    if (type == "UINT8")
+        return IOType_t::UINT8;
+    if (type == "UINT16")
+        return IOType_t::UINT16;
+    if (type == "UINT32")
+        return IOType_t::UINT32;
+    if (type == "UINT64")
+        return IOType_t::UINT64;
+    if (type == "FLOAT32")
+        return IOType_t::FLOAT32;
+    if (type == "FLOAT64")
+        return IOType_t::FLOAT64;
+
+    throw std::runtime_error(
+        std::string("Unknown IOType_t string: ") + std::string(type));
 }
 
 inline IOHandler_t& IOHandler_t::GetInstance()  {
@@ -158,11 +259,11 @@ IoID_t IOHandler_t::registerOutput(EntityID_t entityId, std::string outputName, 
     return 1;
 }
 
-void IOHandler_t::initialize(std::string& ipV4, AmsNetId remoteNetID, AmsNetId localNetID, uint16_t port) {
+void IOHandler_t::initialize(std::string_view ipV4, AmsNetId remoteNetID, const AmsNetId localNetID, uint16_t port) {
 
     // initialize ads route
     bhf::ads::SetLocalAddress(localNetID);
-    m_route.emplace(ipV4, remoteNetID, port);
+    m_route.emplace(std::string(ipV4), remoteNetID, port);
 
     std::vector<std::string> readList;
     std::vector<std::string> writeList;
@@ -190,12 +291,19 @@ void IOHandler_t::readWriteData() {
     m_adsRead->read();
 }
 
+void IOHandler_t::readConfig(const std::string_view path) {
+    config_t config;
+    config.applyConfig(path, m_ioToAdsMap);
+
+    initialize(config.remoteIpV4(), config.getRemoteNetId(), config.getLocalNetId(), config.remotePort());
+}
+
 Runtime_t& Runtime_t::GetInstance() {
     static Runtime_t inst; // created on first call
     return inst;
 }
 
-void Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) {
+void Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) const {
     for (const runtimeEntityEntry & entry: m_entries) {
         entry.entity.init();
     }
@@ -205,7 +313,7 @@ void Runtime_t::initializeRuntime(std::string_view configPath, bool generateConf
         exit(EXIT_SUCCESS);
     }
 
-    //IOHandler_t::GetInstance().readConfig("/path");
+    IOHandler_t::GetInstance().readConfig(configPath);
 
     //IOHandler_t::GetInstance().m_ioToAdsMap.emplace("testEntity::test", "NodeRed.bIsLightOn");
     //IOHandler_t::GetInstance().initialize(ipV4, remoteNetID, localNetID, port);
