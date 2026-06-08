@@ -29,6 +29,9 @@ namespace sim::framework {
 }
 
 namespace sim {
+    /*!
+     * @brief the base class every entity inherits
+     */
     class runtimeEntity_t {
     public:
         virtual ~runtimeEntity_t() = default;
@@ -53,6 +56,38 @@ namespace sim {
     private:
         framework::EntityID_t m_entityID;
         framework::runtimeEntityContext_t& m_context;
+    };
+
+    template<typename T>
+    class EntityIOAdapter_t {
+    protected:
+        [[nodiscard]] bool getReceiverReady() const {return m_receiverReady;};
+        void setReceiverReady(const bool val) {m_receiverReady = val;};
+        void pushObject(T&& object) {m_objectBuffer.emplace(object);};
+        T popObject() {
+            if (!m_objectBuffer.has_value())
+                throw std::runtime_error("cannot get object when no object pushed");
+            T tmp = std::move(m_objectBuffer.value());
+            m_objectBuffer.reset();
+            return tmp;
+        }
+    private:
+        bool m_receiverReady = false;
+        std::optional<T> m_objectBuffer;
+    };
+
+    template<typename T>
+    class EntityIOInput_t : private EntityIOAdapter_t<T> {
+    public:
+        using EntityIOAdapter_t<T>::popObject;
+        using EntityIOAdapter_t<T>::setReceiverReady;
+    };
+
+    template<typename T>
+    class EntityIOOutput_t : private EntityIOAdapter_t<T> {
+    public:
+        using EntityIOAdapter_t<T>::pushObject;
+        using EntityIOAdapter_t<T>::getReceiverReady;
     };
 }
 
