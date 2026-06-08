@@ -26,7 +26,9 @@ namespace sim::framework {
     // test |= 1 << 31;
     // test >> 31 == 1;
     using IoID_t = uint32_t;
+}
 
+namespace sim {
     class runtimeEntity_t {
     public:
         virtual ~runtimeEntity_t() = default;
@@ -43,15 +45,18 @@ namespace sim::framework {
         void virtual init() = 0;
 
     protected:
-        [[nodiscard]] EntityID_t getEntityID() const { return m_entityID; };
-        [[nodiscard]] static IOHandler_t& getIOHandler();
-        [[nodiscard]] static Runtime_t& getRuntime();
-        [[nodiscard]] IOProvider_t& getIOProvider() const;
-        [[nodiscard]] TerminalProvider_t& getTerminalProvider() const;
+        [[nodiscard]] framework::EntityID_t getEntityID() const { return m_entityID; };
+        [[nodiscard]] static framework::IOHandler_t& getIOHandler();
+        [[nodiscard]] static framework::Runtime_t& getRuntime();
+        [[nodiscard]] framework::IOProvider_t& getIOProvider() const;
+        [[nodiscard]] framework::TerminalProvider_t& getTerminalProvider() const;
     private:
-        EntityID_t m_entityID;
-        runtimeEntityContext_t& m_context;
+        framework::EntityID_t m_entityID;
+        framework::runtimeEntityContext_t& m_context;
     };
+}
+
+namespace sim::framework {
 
     enum class IOType_t {
         INVALID = 0,
@@ -342,7 +347,7 @@ namespace sim::framework {
         /*!
          * @brief configures IOHandler and makes the runtime ready
          */
-        void initializeRuntime(std::string_view configPath, bool generateConfig) const;
+        void initializeRuntime(std::string_view configPath, bool generateConfig);
 
         /*!
          * @brief start the runtime, requires to first initialize the runtime and creating all the runtime entities
@@ -357,6 +362,7 @@ namespace sim::framework {
         Runtime_t() = default;
 
     private:
+        std::optional<TerminalProvider_t> m_terminalProvider;
         std::vector<runtimeEntityEntry> m_entries;
         EntityID_t m_entityIdCounter = 1; //! id counter for generating EntityIDs
         TerminalHandler_t m_terminalHandler;

@@ -17,24 +17,24 @@
 
 using json = nlohmann::json;
 
-sim::framework::runtimeEntity_t::runtimeEntity_t(const std::string_view entityName) :
+sim::runtimeEntity_t::runtimeEntity_t(const std::string_view entityName) :
 m_context(getRuntime().registerEntity(*this, entityName)) {
     m_entityID = m_context.entityID;
 }
 
-sim::framework::IOHandler_t & sim::framework::runtimeEntity_t::getIOHandler() {
-    return IOHandler_t::GetInstance();
+sim::framework::IOHandler_t & sim::runtimeEntity_t::getIOHandler() {
+    return framework::IOHandler_t::GetInstance();
 }
 
-sim::framework::Runtime_t & sim::framework::runtimeEntity_t::getRuntime() {
-    return Runtime_t::GetInstance();
+sim::framework::Runtime_t & sim::runtimeEntity_t::getRuntime() {
+    return framework::Runtime_t::GetInstance();
 }
 
-sim::framework::IOProvider_t & sim::framework::runtimeEntity_t::getIOProvider() const {
+sim::framework::IOProvider_t & sim::runtimeEntity_t::getIOProvider() const {
     return m_context.ioProvider;
 }
 
-sim::framework::TerminalProvider_t & sim::framework::runtimeEntity_t::getTerminalProvider() const {
+sim::framework::TerminalProvider_t & sim::runtimeEntity_t::getTerminalProvider() const {
     return m_context.terminalProvider;
 }
 
@@ -143,7 +143,11 @@ void sim::framework::TerminalHandler_t::cycle() {
         it2->func(cmd);
         return;
     }
-    std::cerr << "cmd name is unknown for the selected module" << std::endl;
+    std::cerr << "cmd name is unknown for the selected module\nAvailable cmds:\n";
+    for (const registeredCMD_t & cmd_: it->cmds) {
+        std::cerr << cmd_.cmdName << "\n";
+    }
+    std::cerr.flush();
 }
 
 void sim::framework::config_t::generateConfig(const std::string_view path, const std::vector<IOEntityRegistry_t> &ioMap) {
@@ -394,7 +398,7 @@ sim::framework::Runtime_t& sim::framework::Runtime_t::GetInstance() {
     return inst;
 }
 
-void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) const {
+void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) {
     for (const runtimeEntityEntry & entry: m_entries) {
         entry.entity.init();
     }
@@ -406,11 +410,28 @@ void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, b
 
     IOHandler_t::GetInstance().readConfig(configPath);
 
+    m_terminalProvider.emplace(TerminalProvider_t(0, m_terminalHandler));
+
+    m_terminalProvider->registerCMD("modules", [&](std::string arg) {
+        if (arg == "list") {
+            std::cout << "\nList all entities:\n";
+            for (const runtimeEntityEntry & entry: m_entries) {
+                std::cout << entry.entityID << ": " << entry.entityName << "\n";
+            }
+            std::cout.flush();
+            return;
+        } else {
+            std::cerr << arg << " is not a recognised argument" << std::endl;
+        }
+    });
+
     //IOHandler_t::GetInstance().m_ioToAdsMap.emplace("testEntity::test", "NodeRed.bIsLightOn");
     //IOHandler_t::GetInstance().initialize(ipV4, remoteNetID, localNetID, port);
 }
 
 void sim::framework::Runtime_t::runtimeStart() {
+
+
     while (true) {
         IOHandler_t::GetInstance().readWriteData();
         m_terminalHandler.cycle();
@@ -437,12 +458,16 @@ sim::framework::runtimeEntityContext_t& sim::framework::Runtime_t::registerEntit
 }
 
 std::string sim::framework::Runtime_t::getEntityName(EntityID_t entityID) {
+    if (entityID == 0)
+        return "runtime";
     if (const auto it = std::ranges::find_if(m_entries, [entityID](const auto& entry) { return entry.entityID == entityID; }); it != m_entries.end())
         return it->entityName;
     throw std::runtime_error("Entity ID not found");
 }
 
 sim::framework::EntityID_t sim::framework::Runtime_t::getEntityID(std::string entityName) {
+    if (entityName == "runtime")
+        return 0;
     if (const auto it = std::ranges::find_if(m_entries, [entityName](const auto& entry) { return entry.entityName == entityName; }); it != m_entries.end())
         return it->entityID;
     throw std::runtime_error("Entity name not found");

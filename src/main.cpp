@@ -1,7 +1,7 @@
 #include <iostream>
 #include "Framework.h"
 
-class testEntity_t : public sim::framework::runtimeEntity_t {
+class testEntity_t : public sim::runtimeEntity_t {
     public:
     testEntity_t() : runtimeEntity_t("testEntity") {};
     void cycle() override {
