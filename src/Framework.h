@@ -17,7 +17,7 @@ namespace sim::framework {
     class Runtime_t;
     class IOHandler_t;
     class IOProvider_t;
-    class runtimeEntityContext_t;
+    struct runtimeEntityContext_t;
     class TerminalProvider_t;
 
     using EntityID_t = uint32_t;
@@ -38,18 +38,17 @@ namespace sim {
         explicit runtimeEntity_t(std::string_view entityName);
 
         /*!
-         * @brief is called every cycle by the runtime
-         */
-        void virtual cycle() = 0;
-
-        /*!
          * @brief is called at the start of the simulation to allow initialization by the runtime
          */
         void virtual init() = 0;
 
+        /*!
+         * @brief is called every cycle by the runtime
+         */
+        void virtual cycle() = 0;
+
     protected:
         [[nodiscard]] framework::EntityID_t getEntityID() const { return m_entityID; };
-        [[nodiscard]] static framework::IOHandler_t& getIOHandler();
         [[nodiscard]] static framework::Runtime_t& getRuntime();
         [[nodiscard]] framework::IOProvider_t& getIOProvider() const;
         [[nodiscard]] framework::TerminalProvider_t& getTerminalProvider() const;
@@ -58,36 +57,45 @@ namespace sim {
         framework::runtimeEntityContext_t& m_context;
     };
 
+
+
     template<typename T>
-    class EntityIOAdapter_t {
-    protected:
-        [[nodiscard]] bool getReceiverReady() const {return m_receiverReady;};
-        void setReceiverReady(const bool val) {m_receiverReady = val;};
-        void pushObject(T&& object) {m_objectBuffer.emplace(object);};
-        T popObject() {
+    class EntityIOInput_t {
+    public:
+        virtual ~EntityIOInput_t() = default;
+
+        T virtual popObject() = 0;
+        void virtual setReceiverReady(bool val) = 0;
+        [[nodiscard]] bool virtual isObjectPushed() const = 0;
+    };
+
+    template<typename T>
+    class EntityIOOutput_t {
+    public:
+        virtual ~EntityIOOutput_t() = default;
+
+        void virtual pushObject(T&& object) = 0;
+        [[nodiscard]] bool virtual getReceiverReady() const = 0;
+    };
+
+    template<typename T>
+    class EntityIOAdapter_t : public EntityIOOutput_t<T>, public EntityIOInput_t<T> {
+    public:
+        [[nodiscard]] bool getReceiverReady() const override {return m_receiverReady;};
+        void setReceiverReady(const bool val) override {m_receiverReady = val;};
+        void pushObject(T&& object) override {m_objectBuffer.emplace(object);};
+        T popObject() override {
             if (!m_objectBuffer.has_value())
                 throw std::runtime_error("cannot get object when no object pushed");
             T tmp = std::move(m_objectBuffer.value());
             m_objectBuffer.reset();
             return tmp;
         }
+        [[nodiscard]] bool isObjectPushed() const override {return m_objectBuffer.has_value();}
+
     private:
         bool m_receiverReady = false;
         std::optional<T> m_objectBuffer;
-    };
-
-    template<typename T>
-    class EntityIOInput_t : private EntityIOAdapter_t<T> {
-    public:
-        using EntityIOAdapter_t<T>::popObject;
-        using EntityIOAdapter_t<T>::setReceiverReady;
-    };
-
-    template<typename T>
-    class EntityIOOutput_t : private EntityIOAdapter_t<T> {
-    public:
-        using EntityIOAdapter_t<T>::pushObject;
-        using EntityIOAdapter_t<T>::getReceiverReady;
     };
 }
 
@@ -224,16 +232,7 @@ namespace sim::framework {
      */
     class IOHandler_t {
     public:
-        IOHandler_t(IOHandler_t &other) = delete;
-        IOHandler_t &operator=(IOHandler_t &other) = delete;
-        static IOHandler_t& GetInstance();
-
-        friend class IOProvider_t;
-        friend class Runtime_t;
-        ~IOHandler_t();
-    protected:
-        // for ioProvider
-
+        // for io provider
         IoID_t registerInput(EntityID_t entityId, const std::string& inputName, IOType_t type);
         IoID_t registerOutput(EntityID_t entityId, std::string outputName, IOType_t type);
 
@@ -266,7 +265,6 @@ namespace sim::framework {
             return true;
         }
 
-
         // for runtime
         void initialize(std::string_view ipV4, AmsNetId remoteNetID, AmsNetId localNetID, uint16_t port);
         void readWriteData();
@@ -278,7 +276,7 @@ namespace sim::framework {
          */
         void readConfig(std::string_view path);
 
-        IOHandler_t() = default;
+        ~IOHandler_t();
     private:
         std::vector<IOEntityRegistry_t> m_ioMap;
 
@@ -304,17 +302,18 @@ namespace sim::framework {
 
         template<IOTypeRestriction T>
         [[nodiscard]] inline T readInput(const IoID_t inputIoID) const{
-            return IOHandler_t::GetInstance().readInput<T>(m_entityID, inputIoID);
+            return m_ioHandler.readInput<T>(m_entityID, inputIoID);
         }
 
         template<IOTypeRestriction T>
         [[nodiscard]] bool writeOutput(const IoID_t outputIoID, T value) {
-            return IOHandler_t::GetInstance().writeOutput<T>(m_entityID, outputIoID, value);
+            return m_ioHandler.writeOutput<T>(m_entityID, outputIoID, value);
         }
 
-        friend class Runtime_t;
+        explicit IOProvider_t(EntityID_t entityID, IOHandler_t& ioHandler);
     private:
-        explicit IOProvider_t(EntityID_t entityID);
+
+        IOHandler_t& m_ioHandler;
         EntityID_t m_entityID;
     };
 
@@ -377,7 +376,7 @@ namespace sim::framework {
         /*!
          *
          */
-        static void generateConfig(const std::string_view path) {IOHandler_t::GetInstance().generateConfig(path);}
+        void generateConfig(const std::string_view path) const {m_ioHandler.generateConfig(path);}
 
         /*!
          * @brief configures IOHandler and makes the runtime ready
@@ -397,6 +396,8 @@ namespace sim::framework {
         Runtime_t() = default;
 
     private:
+        IOHandler_t m_ioHandler;
+
         std::optional<TerminalProvider_t> m_terminalProvider;
         std::vector<runtimeEntityEntry> m_entries;
         EntityID_t m_entityIdCounter = 1; //! id counter for generating EntityIDs

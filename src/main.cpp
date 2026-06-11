@@ -19,9 +19,6 @@ class testEntity_t : public sim::runtimeEntity_t {
 };
 
 int main(int argc, char** argv) {
-    // ensure both are ready
-    sim::framework::Runtime_t::GetInstance();
-    sim::framework::IOHandler_t::GetInstance();
 
     testEntity_t testEntity;
 

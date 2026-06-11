@@ -22,10 +22,6 @@ m_context(getRuntime().registerEntity(*this, entityName)) {
     m_entityID = m_context.entityID;
 }
 
-sim::framework::IOHandler_t & sim::runtimeEntity_t::getIOHandler() {
-    return framework::IOHandler_t::GetInstance();
-}
-
 sim::framework::Runtime_t & sim::runtimeEntity_t::getRuntime() {
     return framework::Runtime_t::GetInstance();
 }
@@ -55,15 +51,16 @@ std::string sim::framework::IOHandler_t::getFullyQualifiedName(EntityID_t entity
 }
 
 sim::framework::IoID_t sim::framework::IOProvider_t::registerInput(const std::string& inputName, const IOType_t type) const {
-    return IOHandler_t::GetInstance().registerInput(m_entityID, inputName, type);
+    return m_ioHandler.registerInput(m_entityID, inputName, type);
 }
 
 sim::framework::IoID_t sim::framework::IOProvider_t::registerOutput(const std::string &outputName, const IOType_t type) const {
-    return IOHandler_t::GetInstance().registerOutput(m_entityID, outputName, type);
+    return m_ioHandler.registerOutput(m_entityID, outputName, type);
 }
 
-sim::framework::IOProvider_t::IOProvider_t(const EntityID_t entityID)
-    : m_entityID(entityID) {
+sim::framework::IOProvider_t::IOProvider_t(const EntityID_t entityID, IOHandler_t& ioHandler)
+    : m_ioHandler(ioHandler),
+    m_entityID(entityID) {
 }
 
 void sim::framework::TerminalHandler_t::registerCMD(EntityID_t entityId, std::string_view cmdName, std::function<void(std::string)> func) {
@@ -302,11 +299,6 @@ sim::framework::IOType_t sim::framework::config_t::stringToIoType(const std::str
         std::string("Unknown IOType_t string: ") + std::string(type));
 }
 
-inline sim::framework::IOHandler_t& sim::framework::IOHandler_t::GetInstance()  {
-    static IOHandler_t inst; // created on first call
-    return inst;
-}
-
 sim::framework::IOHandler_t::~IOHandler_t() {
     if (m_adsWrite)
         m_adsWrite.reset();
@@ -403,12 +395,12 @@ void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, b
         entry.entity.init();
     }
     if (generateConfig) {
-        IOHandler_t::GetInstance().generateConfig(configPath);
+        m_ioHandler.generateConfig(configPath);
         std::cout << "Config written to: " << configPath << std::endl;
         exit(EXIT_SUCCESS);
     }
 
-    IOHandler_t::GetInstance().readConfig(configPath);
+    m_ioHandler.readConfig(configPath);
 
     m_terminalProvider.emplace(TerminalProvider_t(0, m_terminalHandler));
 
@@ -425,15 +417,15 @@ void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, b
         }
     });
 
-    //IOHandler_t::GetInstance().m_ioToAdsMap.emplace("testEntity::test", "NodeRed.bIsLightOn");
-    //IOHandler_t::GetInstance().initialize(ipV4, remoteNetID, localNetID, port);
+    //m_ioHandler.m_ioToAdsMap.emplace("testEntity::test", "NodeRed.bIsLightOn");
+    //m_ioHandler.initialize(ipV4, remoteNetID, localNetID, port);
 }
 
 void sim::framework::Runtime_t::runtimeStart() {
 
 
     while (true) {
-        IOHandler_t::GetInstance().readWriteData();
+        m_ioHandler.readWriteData();
         m_terminalHandler.cycle();
         for (const runtimeEntityEntry & entry: m_entries) {
             entry.entity.cycle();
@@ -446,7 +438,7 @@ sim::framework::runtimeEntityContext_t& sim::framework::Runtime_t::registerEntit
         m_entityIdCounter,
         std::string(instanceName),
         instance,
-        IOProvider_t(m_entityIdCounter),
+        IOProvider_t(m_entityIdCounter, m_ioHandler),
         TerminalProvider_t(m_entityIdCounter, m_terminalHandler));
 
     m_entries.back().context.emplace(
