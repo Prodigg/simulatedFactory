@@ -245,8 +245,13 @@ namespace sim::framework {
 
 
             size_t length = sizeof(T);
+            const std::string& adsName = m_ioToAdsMap.at(getFullyQualifiedName(entityId, inputIoID)).adsName;
+
+            if (adsName.empty())
+                return T(); // dont fetch if no ADSName is mapped
+
             const void* ptr = m_adsRead->getSymboleData(
-                m_ioToAdsMap.at(getFullyQualifiedName(entityId, inputIoID)).adsName, &length);
+                adsName, &length);
 
             T returnValue;
             std::memcpy(&returnValue, ptr, sizeof(T));
@@ -254,15 +259,19 @@ namespace sim::framework {
         }
 
         template<IOTypeRestriction T>
-        bool writeOutput(const EntityID_t entityId, const IoID_t outputIoID, T value) {
+        void writeOutput(const EntityID_t entityId, const IoID_t outputIoID, T value) {
             if (!m_adsWrite)
                 throw std::runtime_error("writeOutput called before IOHandler initialized");
 
             if (outputIoID >> 31 == 1)
                 throw std::runtime_error("unable to write output with IoID of input");
 
-            m_adsWrite->setSymbolData(getFullyQualifiedName(entityId, outputIoID), &value, sizeof(T));
-            return true;
+            const std::string& adsName = m_ioToAdsMap.at(getFullyQualifiedName(entityId, outputIoID)).adsName;
+
+            if (adsName.empty())
+                return; // ignore write request (fail silently)
+
+            m_adsWrite->setSymbolData(adsName, &value, sizeof(T));
         }
 
         // for runtime
