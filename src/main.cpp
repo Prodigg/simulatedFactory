@@ -1,5 +1,6 @@
 #include <iostream>
 #include "Framework.h"
+#include "stdMachines.h"
 
 class testEntity_t : public sim::runtimeEntity_t {
     public:

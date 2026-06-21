@@ -83,7 +83,7 @@ namespace sim {
     public:
         [[nodiscard]] bool getReceiverReady() const override {return m_receiverReady;};
         void setReceiverReady(const bool val) override {m_receiverReady = val;};
-        void pushObject(T&& object) override {m_objectBuffer.emplace(object);};
+        void pushObject(T&& object) override {m_objectBuffer.emplace(std::move(object));};
         T popObject() override {
             if (!m_objectBuffer.has_value())
                 throw std::runtime_error("cannot get object when no object pushed");
