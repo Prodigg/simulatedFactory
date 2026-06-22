@@ -31,6 +31,9 @@ struct AdsVariableList {
     void read() {
         uint32_t bytesRead = 0;
         size_t symboleSize = m_symboleNames.size();
+        if (symboleSize == 0)
+            return; // nothing to read
+
         uint32_t error = m_route.ReadWriteReqEx2(
             ADSIGRP_SUMUP_READ,
             symboleSize,
@@ -47,6 +50,9 @@ struct AdsVariableList {
     void write() {
         uint32_t bytesRead = 0;
         size_t symboleSize = m_symboleNames.size();
+        if (symboleSize == 0)
+            return; // nothing to do
+
         copyData2WriteBuf();
 
         size_t readSize = 0;

@@ -17,9 +17,8 @@
 
 using json = nlohmann::json;
 
-sim::runtimeEntity_t::runtimeEntity_t(const std::string_view entityName) :
-m_context(getRuntime().registerEntity(*this, entityName)) {
-    m_entityID = m_context.entityID;
+sim::runtimeEntity_t::runtimeEntity_t(const std::string_view entityName) {
+    m_entityID = getRuntime().registerEntity(*this, entityName);
 }
 
 sim::framework::Runtime_t & sim::runtimeEntity_t::getRuntime() {
@@ -27,11 +26,11 @@ sim::framework::Runtime_t & sim::runtimeEntity_t::getRuntime() {
 }
 
 sim::framework::IOProvider_t & sim::runtimeEntity_t::getIOProvider() const {
-    return m_context.ioProvider;
+    return sim::framework::Runtime_t::GetInstance().getEntityContext(m_entityID).ioProvider;
 }
 
 sim::framework::TerminalProvider_t & sim::runtimeEntity_t::getTerminalProvider() const {
-    return m_context.terminalProvider;
+    return sim::framework::Runtime_t::GetInstance().getEntityContext(m_entityID).terminalProvider;
 }
 
 std::string sim::framework::IOHandler_t::getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID) {
@@ -360,6 +359,9 @@ void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId rem
         std::string entryName = Runtime_t::GetInstance().getEntityName(entityID);
         for (const IOMapEntry_t & entry: ioMap) {
             std::string fullyQualifiedName = entryName + "::" + entry.ioName;
+            if (!m_ioToAdsMap.contains(fullyQualifiedName))
+                continue; // skip entry will be ignored
+
             if (entry.ioID >> 31 == 1)
                 readList.push_back(m_ioToAdsMap.at(fullyQualifiedName).adsName);
             else
@@ -433,7 +435,7 @@ void sim::framework::Runtime_t::runtimeStart() {
     }
 }
 
-sim::framework::runtimeEntityContext_t& sim::framework::Runtime_t::registerEntity(runtimeEntity_t &instance, const std::string_view instanceName) {
+sim::framework::EntityID_t sim::framework::Runtime_t::registerEntity(runtimeEntity_t &instance, const std::string_view instanceName) {
     m_entries.emplace_back(
         m_entityIdCounter,
         std::string(instanceName),
@@ -441,12 +443,18 @@ sim::framework::runtimeEntityContext_t& sim::framework::Runtime_t::registerEntit
         IOProvider_t(m_entityIdCounter, m_ioHandler),
         TerminalProvider_t(m_entityIdCounter, m_terminalHandler));
 
-    m_entries.back().context.emplace(
-        m_entityIdCounter++,
-        m_entries.back().ioProvider,
-        m_entries.back().terminalProvider);
+    return m_entityIdCounter++;
+}
 
-    return m_entries.back().context.value();
+sim::framework::runtimeEntityContext_t sim::framework::Runtime_t::getEntityContext(EntityID_t entityID) {
+    const auto it = std::ranges::find_if(m_entries, [entityID](const auto& entry) { return entry.entityID == entityID; });
+
+    if (it == m_entries.end())
+        throw std::runtime_error("Entity ID not found");
+
+    return {entityID,
+        it->ioProvider,
+        it->terminalProvider};
 }
 
 std::string sim::framework::Runtime_t::getEntityName(EntityID_t entityID) {

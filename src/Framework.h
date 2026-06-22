@@ -54,7 +54,6 @@ namespace sim {
         [[nodiscard]] framework::TerminalProvider_t& getTerminalProvider() const;
     private:
         framework::EntityID_t m_entityID;
-        framework::runtimeEntityContext_t& m_context;
     };
 
 
@@ -245,6 +244,9 @@ namespace sim::framework {
 
 
             size_t length = sizeof(T);
+            if (!m_ioToAdsMap.contains(getFullyQualifiedName(entityId, inputIoID)))
+                return T(); // not registered
+
             const std::string& adsName = m_ioToAdsMap.at(getFullyQualifiedName(entityId, inputIoID)).adsName;
 
             if (adsName.empty())
@@ -265,6 +267,9 @@ namespace sim::framework {
 
             if (outputIoID >> 31 == 1)
                 throw std::runtime_error("unable to write output with IoID of input");
+
+            if (!m_ioToAdsMap.contains(getFullyQualifiedName(entityId, outputIoID)))
+                return; // not registered
 
             const std::string& adsName = m_ioToAdsMap.at(getFullyQualifiedName(entityId, outputIoID)).adsName;
 
@@ -315,7 +320,7 @@ namespace sim::framework {
         }
 
         template<IOTypeRestriction T>
-        [[nodiscard]] bool writeOutput(const IoID_t outputIoID, T value) {
+        void writeOutput(const IoID_t outputIoID, T value) {
             return m_ioHandler.writeOutput<T>(m_entityID, outputIoID, value);
         }
 
@@ -370,7 +375,6 @@ namespace sim::framework {
         runtimeEntity_t& entity;
         IOProvider_t ioProvider;
         TerminalProvider_t terminalProvider;
-        std::optional<runtimeEntityContext_t> context;
     };
 
     /*!
@@ -397,7 +401,10 @@ namespace sim::framework {
          */
         void runtimeStart();
 
-        runtimeEntityContext_t& registerEntity(runtimeEntity_t& instance, std::string_view instanceName = "");
+        EntityID_t registerEntity(runtimeEntity_t& instance, std::string_view instanceName = "");
+
+        runtimeEntityContext_t getEntityContext(EntityID_t entityID);
+
         void destroyEventID(EntityID_t entityID);
         std::string getEntityName(EntityID_t entityID);
         EntityID_t getEntityID(std::string entityName);

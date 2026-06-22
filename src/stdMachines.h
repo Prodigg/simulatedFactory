@@ -16,7 +16,9 @@ namespace sim {
     template <typename T>
     class sensorObjectInterface_t {
     public:
-        [[nodiscard]] virtual const std::optional<const T>& getSensorObject() const = 0;
+        virtual ~sensorObjectInterface_t() = default;
+
+        [[nodiscard]] virtual const std::optional<T>& getSensorObject() const = 0;
         virtual void destroy() = 0;
     };
 
@@ -39,7 +41,7 @@ namespace sim {
     };
 
     template <typename T>
-    class objectGenerator_t : private runtimeEntity_t {
+    class objectGenerator_t : protected runtimeEntity_t {
     public:
         objectGenerator_t(const std::string_view entityName, EntityIOOutput_t<T>& in) : runtimeEntity_t(entityName), m_output(in) {}
 
@@ -69,10 +71,11 @@ namespace sim {
     };
 
     template<typename T>
-    class conveyorBelt_t : private runtimeEntity_t{
+    class conveyorBelt_t : protected runtimeEntity_t{
     public:
-        explicit conveyorBelt_t(const std::string_view conveyorName, size_t conveyorLength) : runtimeEntity_t(conveyorName){
-            m_belt.assign(conveyorLength);
+        explicit conveyorBelt_t(const std::string_view conveyorName, size_t conveyorLength) : runtimeEntity_t(
+            conveyorName), m_forceState(forceState_t::NO_FORCE) {
+            m_belt.assign(conveyorLength, {});
         };
 
         void assignInput(EntityIOInput_t<T>& io) {m_ioInput.emplace(io);};
@@ -105,7 +108,7 @@ namespace sim {
                 (getIOProvider().template readInput<bool>(m_ioMove) && m_forceState != forceState_t::FORCE_STOP)) {
                 // set state of input
                 if (m_ioInput && !m_belt.empty()) {
-                    m_ioInput->setReceiverReady(!m_belt.front().has_value());
+                    m_ioInput.value().get().setReceiverReady(!m_belt.front().has_value());
                 }
 
                 moveElementsOnce();
@@ -118,25 +121,25 @@ namespace sim {
                 return; // nothing to do
 
             // check last element + output
-            if (m_ioOutput.has_value() && m_ioOutput->getReceiverReady() && m_belt.back().has_value()) {
-                m_ioOutput->pushObject(std::move(*m_belt.back()));
+            if (m_ioOutput.has_value() && m_ioOutput.value().get().getReceiverReady() && m_belt.back().has_value()) {
+                m_ioOutput.value().get().pushObject(std::move(*m_belt.back()));
                 m_belt.back().reset();
             }
 
-            for (size_t i = m_belt.size() - 2; i >= 1; --i) { // skip first and last element of the vector
+            for (int i = m_belt.size() - 2; i >= 0; --i) { // skip last element of the vector
                 if (m_belt.at(i).has_value() && !m_belt.at(i + 1).has_value()) {
                     m_belt.at(i + 1).swap(m_belt.at(i));
                 }
             }
 
             // check first element + input
-            if (m_ioInput.has_value() && m_ioInput->isObjectPushed() && !m_belt.front().has_value()) {
-                m_belt.front().emplace(m_ioInput->popObject());
-                m_ioInput->setReceiverReady(false);
+            if (m_ioInput.has_value() && m_ioInput.value().get().isObjectPushed() && !m_belt.front().has_value()) {
+                m_belt.front().emplace(m_ioInput.value().get().popObject());
+                m_ioInput.value().get().setReceiverReady(false);
             }
         }
 
-        [[nodiscard]] const std::optional<const T>& getElementAtPosition(size_t position) const {
+        [[nodiscard]] const std::optional<T>& getElementAtPosition(size_t position) const {
             return m_belt.at(position);
         };
 
@@ -164,12 +167,12 @@ namespace sim {
 
         class sensorImpl_t : public sensorObjectInterface_t<T> {
         public:
-            explicit sensorImpl_t(const conveyorBelt_t& conveyorBelt, const size_t sensorID, const size_t beltPositon)
+            explicit sensorImpl_t(conveyorBelt_t& conveyorBelt, const size_t sensorID, const size_t beltPositon)
                 : m_conveyorBelt(conveyorBelt),
                 m_sensorID(sensorID),
                 m_beltPositon(beltPositon) {}
 
-            const std::optional<const T>& getSensorObject() const final {
+            const std::optional<T>& getSensorObject() const final {
                 return m_conveyorBelt.getElementAtPosition(m_beltPositon);
             }
 
@@ -177,10 +180,10 @@ namespace sim {
                 m_conveyorBelt.destroySensorInterface(m_sensorID);
             }
 
-            [[nodiscard]] size_t getSensorID() const final { return m_sensorID; }
+            [[nodiscard]] size_t getSensorID() const { return m_sensorID; }
 
         private:
-            const conveyorBelt_t& m_conveyorBelt;
+            conveyorBelt_t& m_conveyorBelt;
             size_t m_sensorID;
             size_t m_beltPositon;
         };
@@ -192,7 +195,7 @@ namespace sim {
 
     namespace internal {
         template <typename T>
-        class genericSensor_t : private runtimeEntity_t {
+        class genericSensor_t : protected runtimeEntity_t {
             public:
                 explicit genericSensor_t(const std::string_view name) : runtimeEntity_t(name) {}
 
@@ -202,17 +205,17 @@ namespace sim {
                     m_objectInterface.emplace(sensorInterface);
                 }
 
-                void unlinkSensorInterface(sensorObjectInterface_t<T>& sensorInterface) {
+                void unlinkSensorInterface() {
                     if (!m_objectInterface)
                         return; // interface already unlinked
-                    sensorInterface->destroy();
-                    sensorInterface.reset();
+                    m_objectInterface.value().get().destroy();
+                    m_objectInterface.reset();
                 }
 
                 ~genericSensor_t() override {
                     unlinkSensorInterface();
                 }
-            private:
+            protected:
 
                 std::optional<std::reference_wrapper<sensorObjectInterface_t<T>>> m_objectInterface;
         };
@@ -229,8 +232,14 @@ namespace sim {
 
         void cycle() override {
             if (m_checkFunction && this->m_objectInterface) {
-                if (auto sensorElement = this->m_objectInterface->getSensorObject())
-                    this->getIOProvider().writeOutput(m_outputIO, m_checkFunction->operator()(sensorElement.value()));
+                if (auto sensorElement = this->m_objectInterface.value().get().getSensorObject()) {
+                    bool isSensorTrue = (*m_checkFunction)(sensorElement.value());
+                    this->getIOProvider().writeOutput(m_outputIO, isSensorTrue);
+                    if (m_onSensorTrueCallback && isSensorTrue)
+                        (*m_onSensorTrueCallback)(sensorElement.value());
+
+                }
+
             }
         }
 
@@ -253,7 +262,6 @@ namespace sim {
             if (m_onSensorTrueCallback)
                 m_onSensorTrueCallback.reset();
         }
-
     private:
         std::optional<std::function<bool(const T&)>> m_checkFunction;
         std::optional<std::function<void(const T&)>> m_onSensorTrueCallback;
