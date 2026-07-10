@@ -8,6 +8,7 @@
 #include <iostream>
 #include <ostream>
 #include <list>
+#include <bits/chrono.h>
 
 #include "Framework.h"
 
@@ -25,33 +26,41 @@ namespace sim {
     template <typename T>
     class objectVoider_t : private runtimeEntity_t {
         public:
-        objectVoider_t(std::string_view entityName, EntityIOInput_t<T>& in) : runtimeEntity_t(entityName), m_input(in) {}
+        explicit objectVoider_t(std::string_view entityName) : runtimeEntity_t(entityName) {}
 
         void init() override {
         }
 
         void cycle() override {
-            m_input.setReceiverReady(true);
-            if (m_input.isObjectPushed())
-                m_input.popObject(); // discard input
+            if (!m_input.isConnected())
+                return; // do nothing if no input is connected
+
+            m_input->setReceiverReady(true);
+            if (m_input->isObjectPushed())
+                m_input->popObject(); // discard input
         }
 
+        EntityIOInput_t<T>& getInput() {return m_input;}
     private:
-        EntityIOInput_t<T>& m_input;
+        EntityIOInput_t<T> m_input;
     };
 
     template <typename T>
     class objectGenerator_t : protected runtimeEntity_t {
     public:
-        objectGenerator_t(const std::string_view entityName, EntityIOOutput_t<T>& in) : runtimeEntity_t(entityName), m_output(in) {}
+        explicit objectGenerator_t(const std::string_view entityName) : runtimeEntity_t(entityName) {}
 
         void init() override {
         }
 
         void cycle() override {
-            if (m_output.getReceiverReady() && m_spawnFlag) {
+            if (!m_output.isConnected())
+                return; // do nothing if nothing is connected
+
+            if (m_output->getReceiverReady() && m_spawnFlag && std::chrono::steady_clock::now() >= m_spawnTime + m_lastSpawn) {
+                m_lastSpawn = std::chrono::steady_clock::now();
                 // copy object here to preserve object for future generation
-                m_output.pushObject(std::move(T(m_spawnElement)));
+                m_output->pushObject(std::move(T(m_spawnElement)));
                 if (!m_spawnContinuous)
                     m_spawnFlag = false;
             }
@@ -62,12 +71,22 @@ namespace sim {
         objectGenerator_t& setSpawnElement(const T& element) {m_spawnElement = element; return *this;}
         objectGenerator_t& setSpawnElement(T&& element) {m_spawnElement = std::move(element); return *this;}
 
+        objectGenerator_t& setSpawnInterval(const std::chrono::steady_clock::duration duration) {
+            m_lastSpawn = std::chrono::steady_clock::now();
+            m_spawnTime = duration;
+            return *this;
+        }
+
         objectGenerator_t& spawn() {m_spawnFlag = true; return *this;}
+
+        EntityIOOutput_t<T>& getOutput() {return m_output;}
     private:
         bool m_spawnFlag = false;
         bool m_spawnContinuous = false;
+        std::chrono::steady_clock::time_point m_lastSpawn;
+        std::chrono::steady_clock::duration m_spawnTime = std::chrono::steady_clock::duration::zero();
         T m_spawnElement;
-        EntityIOOutput_t<T>& m_output;
+        EntityIOOutput_t<T> m_output;
     };
 
     template<typename T>
@@ -78,8 +97,8 @@ namespace sim {
             m_belt.assign(conveyorLength, {});
         };
 
-        void assignInput(EntityIOInput_t<T>& io) {m_ioInput.emplace(io);};
-        void assignOutput(EntityIOOutput_t<T>& io) {m_ioOutput.emplace(io);};
+        [[nodiscard]] inline EntityIOInput_t<T>& getInput() {return m_ioInput;}
+        [[nodiscard]] inline EntityIOOutput_t<T>& getOutput() {return m_ioOutput;}
 
         sensorObjectInterface_t<T>& getSensorInterface(const size_t sensorPosition) {
             m_sensorInterfaces.emplace_back(*this, ++m_sensorIDCounter, sensorPosition);
@@ -107,12 +126,24 @@ namespace sim {
             if (m_forceState == forceState_t::FORCE_START ||
                 (getIOProvider().template readInput<bool>(m_ioMove) && m_forceState != forceState_t::FORCE_STOP)) {
                 // set state of input
-                if (m_ioInput && !m_belt.empty()) {
-                    m_ioInput.value().get().setReceiverReady(!m_belt.front().has_value());
+                if (m_ioInput.isConnected() && !m_belt.empty()) {
+                    m_ioInput->setReceiverReady(!m_belt.front().has_value());
                 }
 
-                moveElementsOnce();
+                if (std::chrono::steady_clock::now() >= m_spawnTime + m_lastSpawn) {
+                    m_lastSpawn = std::chrono::steady_clock::now();
+                    moveElementsOnce();
+                }
             }
+        }
+
+        void setMoveInterval(const std::chrono::steady_clock::duration duration) {
+            m_spawnTime = duration;
+            m_lastSpawn = std::chrono::steady_clock::now();
+        }
+
+        [[nodiscard]] inline std::chrono::steady_clock::duration getSpawnTime() const {
+            return m_spawnTime;
         }
 
     private:
@@ -121,8 +152,8 @@ namespace sim {
                 return; // nothing to do
 
             // check last element + output
-            if (m_ioOutput.has_value() && m_ioOutput.value().get().getReceiverReady() && m_belt.back().has_value()) {
-                m_ioOutput.value().get().pushObject(std::move(*m_belt.back()));
+            if (m_ioOutput.isConnected() && m_ioOutput->getReceiverReady() && m_belt.back().has_value()) {
+                m_ioOutput->pushObject(std::move(*m_belt.back()));
                 m_belt.back().reset();
             }
 
@@ -133,9 +164,9 @@ namespace sim {
             }
 
             // check first element + input
-            if (m_ioInput.has_value() && m_ioInput.value().get().isObjectPushed() && !m_belt.front().has_value()) {
-                m_belt.front().emplace(m_ioInput.value().get().popObject());
-                m_ioInput.value().get().setReceiverReady(false);
+            if (m_ioInput.isConnected() && m_ioInput->isObjectPushed() && !m_belt.front().has_value()) {
+                m_belt.front().emplace(m_ioInput->popObject());
+                m_ioInput->setReceiverReady(false);
             }
         }
 
@@ -162,8 +193,8 @@ namespace sim {
         std::vector<std::optional<T>> m_belt;
         framework::IoID_t m_ioMove = 0;
         framework::IoID_t m_ioReverse = 0;
-        std::optional<std::reference_wrapper<EntityIOInput_t<T>>> m_ioInput;
-        std::optional<std::reference_wrapper<EntityIOOutput_t<T>>> m_ioOutput;
+        EntityIOInput_t<T> m_ioInput;
+        EntityIOOutput_t<T> m_ioOutput;
 
         class sensorImpl_t : public sensorObjectInterface_t<T> {
         public:
@@ -190,6 +221,8 @@ namespace sim {
 
         std::list<sensorImpl_t> m_sensorInterfaces;
         size_t m_sensorIDCounter = 0;
+        std::chrono::steady_clock::time_point m_lastSpawn;
+        std::chrono::steady_clock::duration m_spawnTime = std::chrono::steady_clock::duration::zero();
     };
 
 
@@ -237,9 +270,9 @@ namespace sim {
                     this->getIOProvider().writeOutput(m_outputIO, isSensorTrue);
                     if (m_onSensorTrueCallback && isSensorTrue)
                         (*m_onSensorTrueCallback)(sensorElement.value());
-
+                } else {
+                    this->getIOProvider().writeOutput(m_outputIO, false);
                 }
-
             }
         }
 

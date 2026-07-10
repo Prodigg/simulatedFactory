@@ -174,7 +174,7 @@ private:
             0x0,
             sizeof(entry),
             &entry,
-            sizeof(symbolName),
+            symbolName.size(),
             symbolName.c_str(),
             &bytesRead);
         if (error) {

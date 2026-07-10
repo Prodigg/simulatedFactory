@@ -56,45 +56,137 @@ namespace sim {
         framework::EntityID_t m_entityID;
     };
 
+    namespace framework::internal {
+        template<typename T>
+        class EntityIOInputInterface_t {
+        public:
+            virtual ~EntityIOInputInterface_t() = default;
 
+            T virtual popObject() = 0;
+            void virtual setReceiverReady(bool val) = 0;
+            [[nodiscard]] bool virtual isObjectPushed() const = 0;
+        };
+
+        template<typename T>
+        class EntityIOOutputInterface_t {
+        public:
+            virtual ~EntityIOOutputInterface_t() = default;
+
+            void virtual pushObject(T&& object) = 0;
+            [[nodiscard]] bool virtual getReceiverReady() const = 0;
+        };
+
+        template<typename T>
+        class EntityIOAdapterElement_t : public EntityIOOutputInterface_t<T>, public EntityIOInputInterface_t<T> {
+        public:
+            [[nodiscard]] bool getReceiverReady() const override {return m_receiverReady;};
+            void setReceiverReady(const bool val) override {m_receiverReady = val;};
+            void pushObject(T&& object) override {m_objectBuffer.emplace(std::move(object));};
+            T popObject() override {
+                if (!m_objectBuffer.has_value())
+                    throw std::runtime_error("cannot get object when no object pushed");
+                T tmp = std::move(m_objectBuffer.value());
+                m_objectBuffer.reset();
+                return tmp;
+            }
+            [[nodiscard]] bool isObjectPushed() const override {return m_objectBuffer.has_value();}
+
+        private:
+            bool m_receiverReady = false;
+            std::optional<T> m_objectBuffer;
+        };
+
+        template<typename T, template <typename> class TT>
+        class GenericEntityIOClass_t {
+        public:
+            bool connect(TT<T>& ioOutput) {
+                if (m_genericInterface)
+                    return false;
+                m_genericInterface.emplace(ioOutput);
+                return true;
+            };
+
+            bool disconnect() {
+                if (!m_genericInterface)
+                    return false;
+
+                m_genericInterface.reset();
+                return true;
+            };
+
+            [[nodiscard]] TT<T> & get() {
+                if (!m_genericInterface)
+                    throw std::runtime_error("no output interface available");
+                return m_genericInterface.value();
+            }
+
+            [[nodiscard]] inline bool isConnected() { return m_genericInterface.has_value(); }
+
+            TT<T>* operator->() {return &get();}
+            TT<T>& operator*() {return get();}
+        private:
+            std::optional<std::reference_wrapper<TT<T>>> m_genericInterface;
+        };
+    }
 
     template<typename T>
-    class EntityIOInput_t {
-    public:
-        virtual ~EntityIOInput_t() = default;
-
-        T virtual popObject() = 0;
-        void virtual setReceiverReady(bool val) = 0;
-        [[nodiscard]] bool virtual isObjectPushed() const = 0;
-    };
+    using EntityIOInput_t = framework::internal::GenericEntityIOClass_t<T, framework::internal::EntityIOInputInterface_t>;
+    template<typename T>
+    using EntityIOOutput_t = framework::internal::GenericEntityIOClass_t<T, framework::internal::EntityIOOutputInterface_t>;
 
     template<typename T>
-    class EntityIOOutput_t {
+    class EntityIOAdapter_t {
     public:
-        virtual ~EntityIOOutput_t() = default;
+        EntityIOAdapter_t() = default;
+        EntityIOAdapter_t(EntityIOOutput_t<T>& ioOutput, EntityIOInput_t<T>& ioInput) {connect(ioOutput, ioInput);}
 
-        void virtual pushObject(T&& object) = 0;
-        [[nodiscard]] bool virtual getReceiverReady() const = 0;
-    };
+        /*!
+         * @brief connects input and output together
+         * @param ioInput inputElement
+         * @param ioOutput outputElement
+         * @throws std::runtime_error if connection state of ioInput, ioOutput or this adapter is connected to something
+         */
+        void connect(EntityIOOutput_t<T>& ioOutput, EntityIOInput_t<T>& ioInput) {
+            if (m_connected)
+                throw std::runtime_error("cannot connect already connected");
 
-    template<typename T>
-    class EntityIOAdapter_t : public EntityIOOutput_t<T>, public EntityIOInput_t<T> {
-    public:
-        [[nodiscard]] bool getReceiverReady() const override {return m_receiverReady;};
-        void setReceiverReady(const bool val) override {m_receiverReady = val;};
-        void pushObject(T&& object) override {m_objectBuffer.emplace(std::move(object));};
-        T popObject() override {
-            if (!m_objectBuffer.has_value())
-                throw std::runtime_error("cannot get object when no object pushed");
-            T tmp = std::move(m_objectBuffer.value());
-            m_objectBuffer.reset();
-            return tmp;
+            if (ioInput.isConnected())
+                throw std::runtime_error("cannot connect to an already connected input");
+            if (ioOutput.isConnected())
+                throw std::runtime_error("cannot connect to an already connected output");
+
+            ioInput.connect(m_ioAdapter);
+            ioOutput.connect(m_ioAdapter);
+            m_connected = true;
         }
-        [[nodiscard]] bool isObjectPushed() const override {return m_objectBuffer.has_value();}
 
+        /*!
+         * @brief disconnects input and output
+         * @param ioInput inputElement
+         * @param ioOutput outputElement
+         * @throws std::runtime_error if connection state of ioInput, ioOutput or this adapter is disconnected
+         */
+        void disconnect(EntityIOOutput_t<T>& ioOutput, EntityIOInput_t<T>& ioInput) {
+            if (!m_connected)
+                throw std::runtime_error("cannot disconnect already disconnected");
+
+            if (!ioInput.isConnected())
+                throw std::runtime_error("cannot disconnect to an already disconnected input");
+            if (!ioOutput.isConnected())
+                throw std::runtime_error("cannot disconnect to an already disconnected output");
+            ioInput.disconnect();
+            ioOutput.disconnect();
+            m_connected = false;
+        }
+
+        /*!
+         * @brief return if the adapter is connected
+         * @return is connected
+         */
+        [[nodiscard]] inline bool isConnected() const { return m_connected; }
     private:
-        bool m_receiverReady = false;
-        std::optional<T> m_objectBuffer;
+        bool m_connected = false;
+        framework::internal::EntityIOAdapterElement_t<T> m_ioAdapter;
     };
 }
 
@@ -405,7 +497,7 @@ namespace sim::framework {
 
         runtimeEntityContext_t getEntityContext(EntityID_t entityID);
 
-        void destroyEventID(EntityID_t entityID);
+        void destroyEntityID(EntityID_t entityID);
         std::string getEntityName(EntityID_t entityID);
         EntityID_t getEntityID(std::string entityName);
     protected:

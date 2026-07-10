@@ -351,6 +351,8 @@ void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId rem
     bhf::ads::SetLocalAddress(localNetID);
     m_route.emplace(std::string(ipV4), remoteNetID, port);
 
+    std::cout << "IOHandler_t: Connected to PLC: " << std::string(ipV4) << " (" << localNetID << ") : " << port << std::endl;
+
     std::vector<std::string> readList;
     std::vector<std::string> writeList;
 
@@ -359,7 +361,7 @@ void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId rem
         std::string entryName = Runtime_t::GetInstance().getEntityName(entityID);
         for (const IOMapEntry_t & entry: ioMap) {
             std::string fullyQualifiedName = entryName + "::" + entry.ioName;
-            if (!m_ioToAdsMap.contains(fullyQualifiedName))
+            if (!m_ioToAdsMap.contains(fullyQualifiedName) || m_ioToAdsMap.at(fullyQualifiedName).adsName.empty())
                 continue; // skip entry will be ignored
 
             if (entry.ioID >> 31 == 1)
@@ -371,6 +373,8 @@ void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId rem
 
     m_adsWrite.emplace(*m_route, writeList);
     m_adsRead.emplace(*m_route, readList);
+
+    std::cout << "IOHandler_t: ads read and write objects initialized." << std::endl;
 }
 
 void sim::framework::IOHandler_t::readWriteData() {

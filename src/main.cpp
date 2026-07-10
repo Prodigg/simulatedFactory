@@ -29,15 +29,16 @@ int main(int argc, char** argv) {
 
     testObject_t testEntity;
     sim::conveyorBelt_t<testObject_t> conveyorBelt("conveyor", 3);
-    sim::EntityIOAdapter_t<testObject_t> conveyorBeltInAdapter;
-    sim::objectGenerator_t generator("generator", conveyorBeltInAdapter);
-    generator.setSpawnElement(testEntity);
-    generator.spawnContinuous(true).spawn();
+    conveyorBelt.setMoveInterval(std::chrono::seconds(1));
 
-    conveyorBelt.assignInput(conveyorBeltInAdapter);
-    sim::EntityIOAdapter_t<testObject_t> conveyorBeltOutAdapter;
-    conveyorBelt.assignOutput(conveyorBeltOutAdapter);
-    sim::objectVoider_t objectVoider("voider", conveyorBeltOutAdapter);
+    sim::objectGenerator_t<testObject_t> generator("generator");
+    generator.setSpawnElement(testEntity);
+    generator.setSpawnInterval(std::chrono::seconds(5)).spawnContinuous(true).spawn();
+
+    sim::EntityIOAdapter_t<testObject_t> conveyorBeltInAdapter(generator.getOutput(), conveyorBelt.getInput());
+
+    sim::objectVoider_t<testObject_t> objectVoider("voider");
+    sim::EntityIOAdapter_t<testObject_t> conveyorBeltOutAdapter(conveyorBelt.getOutput(), objectVoider.getInput());
 
     sim::digitalSensor_t<testObject_t> digitalSensor("digitalSensor");
 
