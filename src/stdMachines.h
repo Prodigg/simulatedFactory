@@ -89,16 +89,116 @@ namespace sim {
         EntityIOOutput_t<T> m_output;
     };
 
-    template<typename T>
-    class conveyorBelt_t : protected runtimeEntity_t{
-    public:
-        explicit conveyorBelt_t(const std::string_view conveyorName, size_t conveyorLength) : runtimeEntity_t(
-            conveyorName), m_forceState(forceState_t::NO_FORCE) {
-            m_belt.assign(conveyorLength, {});
-        };
+    namespace internal {
+        template <typename T>
+        class linearItemMovement_t : protected runtimeEntity_t {
+        public:
+            explicit linearItemMovement_t(const std::string_view elementName, size_t linearItemsArrayLength) :
+            runtimeEntity_t(elementName) {
+                m_items.assign(linearItemsArrayLength, {});
+            }
 
-        [[nodiscard]] inline EntityIOInput_t<T>& getInput() {return m_ioInput;}
-        [[nodiscard]] inline EntityIOOutput_t<T>& getOutput() {return m_ioOutput;}
+            [[nodiscard]] inline EntityIOInput_t<T>& getInput() {return m_ioInput;}
+            [[nodiscard]] inline EntityIOOutput_t<T>& getOutput() {return m_ioOutput;}
+
+
+            void init() override {
+
+            }
+
+            void cycle() override {
+                if (m_moveElementsOnce || (m_moveElements && std::chrono::steady_clock::now() >= m_moveTime + m_lastMove)) {
+                    m_lastMove = std::chrono::steady_clock::now();
+                    m_moveElementsOnce = false;
+
+                    // set state of input
+                    if (m_ioInput.isConnected() && !m_items.empty()) {
+                        m_ioInput->setReceiverReady(!m_items.front().has_value());
+                    }
+                    moveElementsInItemsOnce();
+                }
+            }
+
+        protected:
+            /*!
+             * @brief set a move interval that is checked if moveElements is true
+             * @param duration interval between movements
+             */
+            void setMoveInterval(const std::chrono::steady_clock::duration duration) {
+                m_moveTime = duration;
+                m_lastMove = std::chrono::steady_clock::now();
+            }
+
+            /*!
+             * @brief get the current set move time
+             * @return moveTime
+             */
+            [[nodiscard]] inline std::chrono::steady_clock::duration getMoveTime() const {
+                return m_moveTime;
+            }
+
+            /*!
+             * @brief get position of a element in the items array
+             * @param position position in items array
+             * @return reference to optional element
+             */
+            [[nodiscard]] const std::optional<T>& getElementAtPosition(size_t position) const {
+                return m_items.at(position);
+            };
+
+            /*!
+             * @brief move the elements on the next cycle once
+             */
+            virtual void moveElementsOnce() {m_moveElementsOnce = true;}
+
+            /*!
+             * @brief start or stop movement on the elements
+             * @param move should elements move
+             */
+            void moveElements(const bool move) {
+                m_moveElements = move;
+                m_lastMove = std::chrono::steady_clock::now();
+            }
+        private:
+            void moveElementsInItemsOnce() {
+                if (m_items.empty())
+                    return; // nothing to do
+
+                // check last element + output
+                if (m_ioOutput.isConnected() && m_ioOutput->getReceiverReady() && m_items.back().has_value()) {
+                    m_ioOutput->pushObject(std::move(*m_items.back()));
+                    m_items.back().reset();
+                }
+
+                for (int i = m_items.size() - 2; i >= 0; --i) { // skip last element of the vector
+                    if (m_items.at(i).has_value() && !m_items.at(i + 1).has_value()) {
+                        m_items.at(i + 1).swap(m_items.at(i));
+                    }
+                }
+
+                // check first element + input
+                if (m_ioInput.isConnected() && m_ioInput->isObjectPushed() && !m_items.front().has_value()) {
+                    m_items.front().emplace(m_ioInput->popObject());
+                    m_ioInput->setReceiverReady(false);
+                }
+            }
+
+            std::vector<std::optional<T>> m_items;
+            EntityIOInput_t<T> m_ioInput;
+            EntityIOOutput_t<T> m_ioOutput;
+            std::chrono::steady_clock::time_point m_lastMove;
+            std::chrono::steady_clock::duration m_moveTime = std::chrono::steady_clock::duration::zero();
+            bool m_moveElementsOnce = false;
+            bool m_moveElements = false;
+        };
+    }
+
+    template<typename T>
+    class conveyorBelt_t : public internal::linearItemMovement_t<T>{
+    public:
+        explicit conveyorBelt_t(const std::string_view conveyorName, size_t conveyorLength) :
+            internal::linearItemMovement_t<T>(conveyorName, conveyorLength),
+            m_forceState(forceState_t::NO_FORCE) {};
 
         sensorObjectInterface_t<T>& getSensorInterface(const size_t sensorPosition) {
             m_sensorInterfaces.emplace_back(*this, ++m_sensorIDCounter, sensorPosition);
@@ -106,12 +206,12 @@ namespace sim {
         }
 
         void init() override {
-            m_ioMove = getIOProvider().registerInput("move", framework::IOType_t::BOOL);
+            m_ioMove = this->getIOProvider().registerInput("move", framework::IOType_t::BOOL);
 
-            getTerminalProvider().registerCMD("forceMove", [&](std::string arg) {
+            this->getTerminalProvider().registerCMD("forceMove", [&](std::string arg) {
                 if (arg == "none") { // stop forcing
                     m_forceState = forceState_t::NO_FORCE;
-                } if (arg == "start") {
+                } else if (arg == "start") {
                     m_forceState = forceState_t::FORCE_START;
                 } else if (arg == "stop") {
                     m_forceState = forceState_t::FORCE_STOP;
@@ -119,61 +219,20 @@ namespace sim {
                     std::cerr << "arg invalid. Arg must be start, stop or none" << std::endl;
                 }
             });
+            internal::linearItemMovement_t<T>::init();
         }
 
         void cycle() override {
-
-            if (m_forceState == forceState_t::FORCE_START ||
-                (getIOProvider().template readInput<bool>(m_ioMove) && m_forceState != forceState_t::FORCE_STOP)) {
-                // set state of input
-                if (m_ioInput.isConnected() && !m_belt.empty()) {
-                    m_ioInput->setReceiverReady(!m_belt.front().has_value());
-                }
-
-                if (std::chrono::steady_clock::now() >= m_spawnTime + m_lastSpawn) {
-                    m_lastSpawn = std::chrono::steady_clock::now();
-                    moveElementsOnce();
-                }
-            }
+            bool moveConveyor = m_forceState == forceState_t::FORCE_START ||
+                (this->getIOProvider().template readInput<bool>(m_ioMove) && m_forceState != forceState_t::FORCE_STOP);
+            this->moveElements(moveConveyor);
+            internal::linearItemMovement_t<T>::cycle();
         }
 
-        void setMoveInterval(const std::chrono::steady_clock::duration duration) {
-            m_spawnTime = duration;
-            m_lastSpawn = std::chrono::steady_clock::now();
-        }
-
-        [[nodiscard]] inline std::chrono::steady_clock::duration getSpawnTime() const {
-            return m_spawnTime;
-        }
+        using internal::linearItemMovement_t<T>::setMoveInterval;
+        using internal::linearItemMovement_t<T>::getMoveTime;
 
     private:
-        void moveElementsOnce() {
-            if (m_belt.empty())
-                return; // nothing to do
-
-            // check last element + output
-            if (m_ioOutput.isConnected() && m_ioOutput->getReceiverReady() && m_belt.back().has_value()) {
-                m_ioOutput->pushObject(std::move(*m_belt.back()));
-                m_belt.back().reset();
-            }
-
-            for (int i = m_belt.size() - 2; i >= 0; --i) { // skip last element of the vector
-                if (m_belt.at(i).has_value() && !m_belt.at(i + 1).has_value()) {
-                    m_belt.at(i + 1).swap(m_belt.at(i));
-                }
-            }
-
-            // check first element + input
-            if (m_ioInput.isConnected() && m_ioInput->isObjectPushed() && !m_belt.front().has_value()) {
-                m_belt.front().emplace(m_ioInput->popObject());
-                m_ioInput->setReceiverReady(false);
-            }
-        }
-
-        [[nodiscard]] const std::optional<T>& getElementAtPosition(size_t position) const {
-            return m_belt.at(position);
-        };
-
         void destroySensorInterface(const size_t sensorID) {
             auto it = std::ranges::find_if(m_sensorInterfaces.begin(), m_sensorInterfaces.end(),
                 [&](const sensorImpl_t& sensorImpl) {return sensorID == sensorImpl.getSensorID();});
@@ -190,11 +249,8 @@ namespace sim {
             FORCE_STOP
         } m_forceState;
 
-        std::vector<std::optional<T>> m_belt;
         framework::IoID_t m_ioMove = 0;
         framework::IoID_t m_ioReverse = 0;
-        EntityIOInput_t<T> m_ioInput;
-        EntityIOOutput_t<T> m_ioOutput;
 
         class sensorImpl_t : public sensorObjectInterface_t<T> {
         public:
@@ -221,8 +277,6 @@ namespace sim {
 
         std::list<sensorImpl_t> m_sensorInterfaces;
         size_t m_sensorIDCounter = 0;
-        std::chrono::steady_clock::time_point m_lastSpawn;
-        std::chrono::steady_clock::duration m_spawnTime = std::chrono::steady_clock::duration::zero();
     };
 
 
