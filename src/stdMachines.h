@@ -83,7 +83,7 @@ namespace sim {
     private:
         bool m_spawnFlag = false;
         bool m_spawnContinuous = false;
-        std::chrono::steady_clock::time_point m_lastSpawn;
+        std::chrono::steady_clock::time_point m_lastSpawn = std::chrono::steady_clock::now();
         std::chrono::steady_clock::duration m_spawnTime = std::chrono::steady_clock::duration::zero();
         T m_spawnElement;
         EntityIOOutput_t<T> m_output;
@@ -138,13 +138,32 @@ namespace sim {
             }
 
             /*!
-             * @brief get position of a element in the items array
+             * @brief get element of a position in the items array
              * @param position position in items array
              * @return reference to optional element
              */
             [[nodiscard]] const std::optional<T>& getElementAtPosition(size_t position) const {
                 return m_items.at(position);
             };
+
+            /*!
+             * @brief remove element at position in items array
+             * @param position position in items array
+             */
+            void removeElementAtPosition(size_t position) {
+                m_items.at(position).reset();
+            }
+
+            /*!
+             * @brief adds element at position in items array
+             * @param element element to add
+             * @param position position to insert
+             */
+            void addElementAtPosition(T&& element, size_t position) {
+                if (m_items.at(position))
+                    throw std::runtime_error("item is already in position");
+                m_items.at(position).emplace(std::move(element));
+            }
 
             /*!
              * @brief move the elements on the next cycle once
@@ -193,17 +212,13 @@ namespace sim {
         };
     }
 
-    template<typename T>
+    template<typename T, size_t conveyorLength>
     class conveyorBelt_t : public internal::linearItemMovement_t<T>{
     public:
-        explicit conveyorBelt_t(const std::string_view conveyorName, size_t conveyorLength) :
+        explicit conveyorBelt_t(const std::string_view conveyorName) :
             internal::linearItemMovement_t<T>(conveyorName, conveyorLength),
-            m_forceState(forceState_t::NO_FORCE) {};
-
-        sensorObjectInterface_t<T>& getSensorInterface(const size_t sensorPosition) {
-            m_sensorInterfaces.emplace_back(*this, ++m_sensorIDCounter, sensorPosition);
-            return dynamic_cast<sensorObjectInterface_t<T>&>(m_sensorInterfaces.back());
-        }
+            m_forceState(forceState_t::NO_FORCE),
+            m_mountPoints(utils::makeElementsInArray<mountpointImpl_t>(*this, std::make_index_sequence<conveyorLength>{})) {};
 
         void init() override {
             m_ioMove = this->getIOProvider().registerInput("move", framework::IOType_t::BOOL);
@@ -232,16 +247,11 @@ namespace sim {
         using internal::linearItemMovement_t<T>::setMoveInterval;
         using internal::linearItemMovement_t<T>::getMoveTime;
 
-    private:
-        void destroySensorInterface(const size_t sensorID) {
-            auto it = std::ranges::find_if(m_sensorInterfaces.begin(), m_sensorInterfaces.end(),
-                [&](const sensorImpl_t& sensorImpl) {return sensorID == sensorImpl.getSensorID();});
-
-            if (it == m_sensorInterfaces.end())
-                throw std::runtime_error("Sensor ID not found cant destroy sensor object");
-
-            m_sensorInterfaces.erase(it);
+        mountpoint::mountpoint_t<T>* getMountpointInterface(size_t sensorPosition) {
+            return dynamic_cast<mountpoint::mountpoint_t<T>*>(&m_mountPoints.at(sensorPosition));
         }
+
+    private:
 
         enum class forceState_t{
             NO_FORCE,
@@ -252,31 +262,48 @@ namespace sim {
         framework::IoID_t m_ioMove = 0;
         framework::IoID_t m_ioReverse = 0;
 
-        class sensorImpl_t : public sensorObjectInterface_t<T> {
+        class mountpointImpl_t :
+            public mountpoint::mountpoint_t<T>,
+            public mountpoint::canPeekElement_t<T>,
+            public mountpoint::canPopElement_t<T>,
+            public mountpoint::canPushElement_t<T>{
         public:
-            explicit sensorImpl_t(conveyorBelt_t& conveyorBelt, const size_t sensorID, const size_t beltPositon)
+            explicit mountpointImpl_t(conveyorBelt_t& conveyorBelt, const size_t beltPositon)
                 : m_conveyorBelt(conveyorBelt),
-                m_sensorID(sensorID),
                 m_beltPositon(beltPositon) {}
 
-            const std::optional<T>& getSensorObject() const final {
-                return m_conveyorBelt.getElementAtPosition(m_beltPositon);
+            [[nodiscard]] bool isElementPresent() const final {
+                return m_conveyorBelt.getElementAtPosition(m_beltPositon).has_value();
             }
 
-            void destroy() final {
-                m_conveyorBelt.destroySensorInterface(m_sensorID);
+            const T& peek() final {
+                auto element = m_conveyorBelt.getElementAtPosition(m_beltPositon);
+                if (!element.has_value())
+                    throw std::runtime_error("peek when no element is present");
+                return element.value();
             }
 
-            [[nodiscard]] size_t getSensorID() const { return m_sensorID; }
+            T pop() override {
+                if (!isElementPresent())
+                    throw std::runtime_error("pop when no item present");
+                T copy = T(m_conveyorBelt.getElementAtPosition(m_beltPositon).value());
+                m_conveyorBelt.removeElementAtPosition(m_beltPositon);
+                return copy;
+            };
+
+            void push(T&& element) override {
+                if (isElementPresent())
+                    throw std::runtime_error("push when element is present");
+                m_conveyorBelt.addElementAtPosition(std::move(element), m_beltPositon);
+            };
 
         private:
             conveyorBelt_t& m_conveyorBelt;
-            size_t m_sensorID;
             size_t m_beltPositon;
         };
 
-        std::list<sensorImpl_t> m_sensorInterfaces;
-        size_t m_sensorIDCounter = 0;
+
+        std::array<mountpointImpl_t, conveyorLength> m_mountPoints;
     };
 
 
@@ -286,16 +313,16 @@ namespace sim {
             public:
                 explicit genericSensor_t(const std::string_view name) : runtimeEntity_t(name) {}
 
-                void linkSensorInterface(sensorObjectInterface_t<T>& sensorInterface) {
+                void linkSensorInterface(mountpoint::mountpoint_t<T>* sensorInterface) {
                     if (m_objectInterface)
                         throw std::runtime_error("sensor interface already linked");
-                    m_objectInterface.emplace(sensorInterface);
+                    m_objectInterface.emplace(
+                        (*sensorInterface).template getInterface<mountpoint::canPeekElement_t<T>>());
                 }
 
                 void unlinkSensorInterface() {
                     if (!m_objectInterface)
                         return; // interface already unlinked
-                    m_objectInterface.value().get().destroy();
                     m_objectInterface.reset();
                 }
 
@@ -304,7 +331,7 @@ namespace sim {
                 }
             protected:
 
-                std::optional<std::reference_wrapper<sensorObjectInterface_t<T>>> m_objectInterface;
+                std::optional<mountpoint::canPeekElement_t<T>*> m_objectInterface;
         };
     }
 
@@ -319,11 +346,14 @@ namespace sim {
 
         void cycle() override {
             if (m_checkFunction && this->m_objectInterface) {
-                if (auto sensorElement = this->m_objectInterface.value().get().getSensorObject()) {
-                    bool isSensorTrue = (*m_checkFunction)(sensorElement.value());
+                if (this->m_objectInterface.value()->isElementPresent()) {
+                    const T& sensorElement = this->m_objectInterface.value()->peek();
+
+                    bool isSensorTrue = (*m_checkFunction)(sensorElement);
                     this->getIOProvider().writeOutput(m_outputIO, isSensorTrue);
+
                     if (m_onSensorTrueCallback && isSensorTrue)
-                        (*m_onSensorTrueCallback)(sensorElement.value());
+                        (*m_onSensorTrueCallback)(sensorElement);
                 } else {
                     this->getIOProvider().writeOutput(m_outputIO, false);
                 }

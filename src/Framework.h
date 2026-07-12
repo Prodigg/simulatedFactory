@@ -188,6 +188,104 @@ namespace sim {
         bool m_connected = false;
         framework::internal::EntityIOAdapterElement_t<T> m_ioAdapter;
     };
+
+    namespace mountpoint {
+        /*!
+         * @brief is implemented if the mountpoint has isElementPresent
+         * @tparam T
+         */
+        template<typename T>
+        class hasElement_t {
+        public:
+            /*!
+             * @brief ĉhecks if an element is present at current mountpoint
+             * @return is element present
+             */
+            [[nodiscard]] virtual bool isElementPresent() const = 0;
+
+            virtual ~hasElement_t() = default;
+        };
+
+        /*!
+         * @brief is implemented if a mounting point provides a interface for pushing an element
+         * @tparam T
+         */
+        template<typename T>
+        class canPushElement_t : public hasElement_t<T>{
+        public:
+            /*!
+             * @brief pushes element on the current mountpoint
+             * @throws std::runtime_error if an object is present
+             * @param element element to push
+             */
+            virtual void push(T&& element) = 0;
+
+            ~canPushElement_t() override = default;
+        };
+
+        /*!
+         * @brief is implemented if a mounting point provides a interface for poping an element
+         * @tparam T
+         */
+        template<typename T>
+        class canPopElement_t : public hasElement_t<T> {
+        public:
+            /*!
+             * @brief pops current element and returns it.
+             * @throws std::runtime_error if no object is present
+             * @return removed element
+             */
+            virtual T pop() = 0;
+
+            ~canPopElement_t() override = default;
+        };
+
+        /*!
+         * @brief is implemented if a mounting point provides a interface for peeking an element
+         * @tparam T
+         */
+        template<typename T>
+        class canPeekElement_t : public hasElement_t<T>{
+        public:
+            /*!
+             * @brief peek at element on the current mountpoint. Do not store reference may be invalid on next cycle.
+             * @throws std::runtime_error if no object is present
+             * @return reference to element
+             */
+            virtual const T& peek() = 0;
+
+            ~canPeekElement_t() override = default;
+        };
+
+        /*!
+         * @bried genric mountpoint
+         * @tparam T element type this interface provides interaction with
+         */
+        template<typename T>
+        class mountpoint_t {
+        public:
+            /*!
+             * @brief base implementation of a mountpoint
+             * @tparam Interface interface type to cast element to
+             * @return interface
+             */
+            template<class Interface>
+            Interface* getInterface() { return dynamic_cast<Interface*>(this); }
+
+            virtual ~mountpoint_t() = default;
+        };
+    }
+
+    namespace utils
+    {
+        template<typename Element, typename Common, std::size_t... I>
+        std::array<Element, sizeof...(I)> makeElementsInArray(
+            Common& common,
+            std::index_sequence<I...>)
+        {
+            return { Element(common, I)... };
+        }
+    }
 }
 
 namespace sim::framework {

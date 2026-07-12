@@ -28,7 +28,7 @@ int main(int argc, char** argv) {
     sim::framework::Runtime_t::GetInstance();
 
     testObject_t testEntity;
-    sim::conveyorBelt_t<testObject_t> conveyorBelt("conveyor", 3);
+    sim::conveyorBelt_t<testObject_t, 3> conveyorBelt("conveyor");
     conveyorBelt.setMoveInterval(std::chrono::seconds(1));
 
     sim::objectGenerator_t<testObject_t> generator("generator");
@@ -44,7 +44,7 @@ int main(int argc, char** argv) {
 
     digitalSensor.setOnSensorTrueCallback([](const testObject_t& obj){ std::cout << "TestEntityNum: " << obj.number << std::endl; });
     digitalSensor.setSensorCheckFunction([](const testObject_t& obj) {return true;});
-    digitalSensor.linkSensorInterface(conveyorBelt.getSensorInterface(2));
+    digitalSensor.linkSensorInterface(conveyorBelt.getMountpointInterface(2));
 
 
     //TODO: make these two args controllable via cli
