@@ -192,9 +192,7 @@ namespace sim {
     namespace mountpoint {
         /*!
          * @brief is implemented if the mountpoint has isElementPresent
-         * @tparam T
          */
-        template<typename T>
         class hasElement_t {
         public:
             /*!
@@ -211,7 +209,7 @@ namespace sim {
          * @tparam T
          */
         template<typename T>
-        class canPushElement_t : public hasElement_t<T>{
+        class canPushElement_t : public hasElement_t{
         public:
             /*!
              * @brief pushes element on the current mountpoint
@@ -228,7 +226,7 @@ namespace sim {
          * @tparam T
          */
         template<typename T>
-        class canPopElement_t : public hasElement_t<T> {
+        class canPopElement_t : public hasElement_t {
         public:
             /*!
              * @brief pops current element and returns it.
@@ -245,7 +243,7 @@ namespace sim {
          * @tparam T
          */
         template<typename T>
-        class canPeekElement_t : public hasElement_t<T>{
+        class canPeekElement_t : public hasElement_t{
         public:
             /*!
              * @brief peek at element on the current mountpoint. Do not store reference may be invalid on next cycle.

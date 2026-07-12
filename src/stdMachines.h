@@ -107,14 +107,14 @@ namespace sim {
             }
 
             void cycle() override {
-                if (m_moveElementsOnce || (m_moveElements && std::chrono::steady_clock::now() >= m_moveTime + m_lastMove)) {
-                    m_lastMove = std::chrono::steady_clock::now();
+                // set state of input
+                if (m_ioInput.isConnected() && !m_items.empty()) {
+                    m_ioInput->setReceiverReady(!m_items.front().has_value());
+                }
+                if (const auto now = std::chrono::steady_clock::now();
+                    m_moveElementsOnce || (m_moveElements && now >= m_moveTime + m_lastMove)) {
+                    m_lastMove = now;
                     m_moveElementsOnce = false;
-
-                    // set state of input
-                    if (m_ioInput.isConnected() && !m_items.empty()) {
-                        m_ioInput->setReceiverReady(!m_items.front().has_value());
-                    }
                     moveElementsInItemsOnce();
                 }
             }
@@ -176,7 +176,6 @@ namespace sim {
              */
             void moveElements(const bool move) {
                 m_moveElements = move;
-                m_lastMove = std::chrono::steady_clock::now();
             }
         private:
             void moveElementsInItemsOnce() {
@@ -277,7 +276,7 @@ namespace sim {
             }
 
             const T& peek() final {
-                auto element = m_conveyorBelt.getElementAtPosition(m_beltPositon);
+                auto& element = m_conveyorBelt.getElementAtPosition(m_beltPositon);
                 if (!element.has_value())
                     throw std::runtime_error("peek when no element is present");
                 return element.value();
