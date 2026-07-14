@@ -33,11 +33,14 @@ sim::framework::TerminalProvider_t & sim::runtimeEntity_t::getTerminalProvider()
     return sim::framework::Runtime_t::GetInstance().getEntityContext(m_entityID).terminalProvider;
 }
 
-std::string sim::framework::IOHandler_t::getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID) {
+std::string sim::framework::IOHandler_t::getFullyQualifiedName(const EntityID_t entityId, IoID_t inputIoID) {
     std::string_view ioName;
-    if (const auto it = std::ranges::find_if(m_ioMap,[entityId](const IOEntityRegistry_t& entry) { return entityId == entry.entityID;}); it != m_ioMap.end())
-        if (const auto it2 = std::ranges::find_if(it->ioMap, [inputIoID](const IOMapEntry_t& entry) { return inputIoID == entry.ioID;}); it2 != it->ioMap.end())
-            ioName = it2->ioName;
+    if (!m_ioMap.contains(entityId))
+        throw std::runtime_error("unable to find IO name for entity id ");
+    auto& ioMap= m_ioMap.at(entityId).ioMap;
+
+    if (const auto it = std::ranges::find_if(ioMap, [inputIoID](const IOMapEntry_t& entry) { return inputIoID == entry.ioID;}); it != ioMap.end())
+        ioName = it->ioName;
 
     if (ioName.empty())
         throw std::runtime_error("unable to find IO name for entity id ");
@@ -146,7 +149,7 @@ void sim::framework::TerminalHandler_t::cycle() {
     std::cerr.flush();
 }
 
-void sim::framework::config_t::generateConfig(const std::string_view path, const std::vector<IOEntityRegistry_t> &ioMap) {
+void sim::framework::config_t::generateConfig(const std::string_view path, const std::unordered_map<EntityID_t, IOEntityRegistry_t> &ioMap) {
     if (path.empty())
         throw std::runtime_error("configuration file name is empty");
 
@@ -166,14 +169,11 @@ void sim::framework::config_t::generateConfig(const std::string_view path, const
         }
     };
 
-
-
-    for (const auto &[entityID, ioMap_]: ioMap) {
+    for (const auto& [entityID, registry]: ioMap) {
         std::string entityName = Runtime_t::GetInstance().getEntityName(entityID);
-        for (const auto& entry: ioMap_)
+        for (const auto& entry: registry.ioMap)
             config.at("AdsSymbolMapping").push_back({{entityName + "::" + entry.ioName, ""},{"type", ioTypeToString(entry.type)}});
     }
-
 
     std::ofstream file{std::string(path)};
     if (!file.is_open())
@@ -312,16 +312,15 @@ sim::framework::IoID_t sim::framework::IOHandler_t::registerInput(const EntityID
         throw std::runtime_error("IOHandler already initialized, unable to register new inputs");
 
     // check if we find a existing entity entry
-    for (auto &[entityID, ioMap] : m_ioMap) {
-        if (entityID == entityId) {
-            IoID_t ioId = (ioMap.back().ioID + 1) | 1 << 31;
-            ioMap.emplace_back(ioId, inputName, type);
-            return ioId;
-        }
+    if (m_ioMap.contains(entityId)) {
+        auto& ioMap = m_ioMap.at(entityId).ioMap;
+        IoID_t ioId = (ioMap.back().ioID + 1) | 1 << 31;
+        ioMap.emplace_back(ioId, inputName, type);
+        return ioId;
     }
 
-    std::vector<IOMapEntry_t> ioMap = {{static_cast<IoID_t>(1) | (1 << 31), inputName, type}};
-    m_ioMap.emplace_back(entityId, ioMap);
+    const std::vector<IOMapEntry_t> ioMap = {{static_cast<IoID_t>(1) | (1 << 31), inputName, type}};
+    m_ioMap.emplace(entityId, IOEntityRegistry_t{entityId, ioMap});
     return static_cast<IoID_t>(1) | (1 << 31);
 }
 
@@ -330,18 +329,17 @@ sim::framework::IoID_t sim::framework::IOHandler_t::registerOutput(EntityID_t en
         throw std::runtime_error("IOHandler already initialized, unable to register new inputs");
 
     // check if we find a existing entity entry
-    for (auto &[entityID, ioMap] : m_ioMap) {
-        if (entityID == entityId) {
-            IoID_t outputBitMask = 0xFFFFFFFF;
-            outputBitMask = outputBitMask >> 1;
-            IoID_t ioId = (ioMap.back().ioID + 1) & outputBitMask;
-            ioMap.emplace_back(ioId, outputName, type);
-            return ioId;
-        }
+    if (m_ioMap.contains(entityId)) {
+        auto& ioMap = m_ioMap.at(entityId).ioMap;
+        IoID_t outputBitMask = 0xFFFFFFFF;
+        outputBitMask = outputBitMask >> 1;
+        IoID_t ioId = (ioMap.back().ioID + 1) & outputBitMask;
+        ioMap.emplace_back(ioId, outputName, type);
+        return ioId;
     }
 
     std::vector<IOMapEntry_t> ioMap = {{1, outputName, type}};
-    m_ioMap.emplace_back(entityId, ioMap);
+    m_ioMap.emplace(entityId, IOEntityRegistry_t{entityId, ioMap});
     return 1;
 }
 
@@ -357,9 +355,9 @@ void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId rem
     std::vector<std::string> writeList;
 
     // find write / read list
-    for (const auto &[entityID, ioMap]: m_ioMap) {
+    for (const auto &[entityID, registry]: m_ioMap) {
         std::string entryName = Runtime_t::GetInstance().getEntityName(entityID);
-        for (const IOMapEntry_t & entry: ioMap) {
+        for (const IOMapEntry_t & entry: registry.ioMap) {
             std::string fullyQualifiedName = entryName + "::" + entry.ioName;
             if (!m_ioToAdsMap.contains(fullyQualifiedName) || m_ioToAdsMap.at(fullyQualifiedName).adsName.empty())
                 continue; // skip entry will be ignored

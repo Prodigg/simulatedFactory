@@ -395,7 +395,7 @@ namespace sim::framework {
 
     class config_t {
     public:
-        static void generateConfig(std::string_view path, const std::vector<IOEntityRegistry_t>& ioMap);
+        static void generateConfig(std::string_view path, const std::unordered_map<EntityID_t, IOEntityRegistry_t>& ioMap);
         void applyConfig(std::string_view path, std::unordered_map<std::string, ioToAdsMapElement_t>& ioMap);
 
         [[nodiscard]] inline AmsNetId getLocalNetId() const {return m_localNetId;};
@@ -430,12 +430,12 @@ namespace sim::framework {
             if (inputIoID >> 31 == 0)
                 throw std::runtime_error("unable to read input with IoID of output");
 
-
+            const std::string fullyQualifiedName(getFullyQualifiedName(entityId, inputIoID));
             size_t length = sizeof(T);
-            if (!m_ioToAdsMap.contains(getFullyQualifiedName(entityId, inputIoID)))
+            if (!m_ioToAdsMap.contains(fullyQualifiedName))
                 return T(); // not registered
 
-            const std::string& adsName = m_ioToAdsMap.at(getFullyQualifiedName(entityId, inputIoID)).adsName;
+            const std::string& adsName = m_ioToAdsMap.at(fullyQualifiedName).adsName;
 
             if (adsName.empty())
                 return T(); // dont fetch if no ADSName is mapped
@@ -456,10 +456,11 @@ namespace sim::framework {
             if (outputIoID >> 31 == 1)
                 throw std::runtime_error("unable to write output with IoID of input");
 
-            if (!m_ioToAdsMap.contains(getFullyQualifiedName(entityId, outputIoID)))
+            const std::string fullyQualifiedName(getFullyQualifiedName(entityId, outputIoID));
+            if (!m_ioToAdsMap.contains(fullyQualifiedName))
                 return; // not registered
 
-            const std::string& adsName = m_ioToAdsMap.at(getFullyQualifiedName(entityId, outputIoID)).adsName;
+            const std::string& adsName = m_ioToAdsMap.at(fullyQualifiedName).adsName;
 
             if (adsName.empty())
                 return; // ignore write request (fail silently)
@@ -480,7 +481,8 @@ namespace sim::framework {
 
         ~IOHandler_t();
     private:
-        std::vector<IOEntityRegistry_t> m_ioMap;
+        std::unordered_map<EntityID_t, IOEntityRegistry_t> m_ioMap;
+        std::unordered_map<IoID_t, std::string> m_ioLookupMap;
 
         //! needs to be optional to wait until it is configured
         std::optional<AdsVariableList> m_adsRead;
@@ -488,7 +490,6 @@ namespace sim::framework {
         std::optional<AdsDevice> m_route;
 
         std::string getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID);
-
 
         std::unordered_map<std::string, ioToAdsMapElement_t> m_ioToAdsMap;
     };
