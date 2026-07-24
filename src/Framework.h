@@ -5,13 +5,18 @@
 #ifndef SIMULATEDFACTORY_FRAMEWORK_H
 #define SIMULATEDFACTORY_FRAMEWORK_H
 
-#include <stack>
+#define CROW_MAIN
 
 #include "AdsVariableList.h"
+#include <nlohmann/json.hpp>
+#include <crow.h>
+#include <stack>
+#include <queue>
 #include <algorithm>
 #include <cstring>
 #include <ranges>
 #include <functional>
+#include <utility>
 
 namespace sim::framework {
     class Runtime_t;
@@ -19,10 +24,11 @@ namespace sim::framework {
     class IOProvider_t;
     struct runtimeEntityContext_t;
     class TerminalProvider_t;
+    class visualizationProvider_t;
 
     using EntityID_t = uint32_t;
 
-    // the last bit (31) is 0 if output () and 1 if input
+    // the last bit (31) is 0 if output and 1 if input
     // test |= 1 << 31;
     // test >> 31 == 1;
     using IoID_t = uint32_t;
@@ -52,6 +58,7 @@ namespace sim {
         [[nodiscard]] static framework::Runtime_t& getRuntime();
         [[nodiscard]] framework::IOProvider_t& getIOProvider() const;
         [[nodiscard]] framework::TerminalProvider_t& getTerminalProvider() const;
+        [[nodiscard]] framework::visualizationProvider_t& getVisualizationProvider() const;
     private:
         framework::EntityID_t m_entityID;
     };
@@ -402,6 +409,8 @@ namespace sim::framework {
         [[nodiscard]] inline AmsNetId getRemoteNetId() const {return m_remoteNetId;};
         [[nodiscard]] inline std::string remoteIpV4() const {return m_remoteIpV4;};
         [[nodiscard]] inline uint16_t remotePort() const {return m_remotePort;};
+
+        [[nodiscard]] inline nlohmann::json getConfig() const {return m_readConfig;};
     private:
         static std::string ioTypeToString(IOType_t type);
         static IOType_t stringToIoType(std::string_view type);
@@ -410,6 +419,8 @@ namespace sim::framework {
         ConfigNetId_t m_remoteNetId;
         std::string m_remoteIpV4;
         uint16_t m_remotePort = 0;
+
+        nlohmann::json m_readConfig;
     };
 
     /*!
@@ -438,7 +449,7 @@ namespace sim::framework {
             const std::string& adsName = m_ioToAdsMap.at(fullyQualifiedName).adsName;
 
             if (adsName.empty())
-                return T(); // dont fetch if no ADSName is mapped
+                return T(); // don't fetch if no ADSName is mapped
 
             const void* ptr = m_adsRead->getSymboleData(
                 adsName, &length);
@@ -479,6 +490,8 @@ namespace sim::framework {
          */
         void readConfig(std::string_view path);
 
+        [[nodiscard]] nlohmann::json getConfig() const {return m_readConfig;};
+
         ~IOHandler_t();
     private:
         std::unordered_map<EntityID_t, IOEntityRegistry_t> m_ioMap;
@@ -492,6 +505,8 @@ namespace sim::framework {
         std::string getFullyQualifiedName(EntityID_t entityId, IoID_t inputIoID);
 
         std::unordered_map<std::string, ioToAdsMapElement_t> m_ioToAdsMap;
+
+        nlohmann::json m_readConfig;
     };
 
     /*!
@@ -512,10 +527,8 @@ namespace sim::framework {
         void writeOutput(const IoID_t outputIoID, T value) {
             return m_ioHandler.writeOutput<T>(m_entityID, outputIoID, value);
         }
-
         explicit IOProvider_t(EntityID_t entityID, IOHandler_t& ioHandler);
     private:
-
         IOHandler_t& m_ioHandler;
         EntityID_t m_entityID;
     };
@@ -552,10 +565,154 @@ namespace sim::framework {
         EntityID_t m_entityID;
     };
 
+    class VisualizationHandler_t {
+    public:
+        void initialize() {
+            using namespace std::chrono_literals;
+
+            CROW_ROUTE(m_app, "/api/status")([](){
+                crow::json::wvalue json;
+                json["status"] = "ok";
+                return json;
+            });
+
+            CROW_ROUTE(m_app, "/")
+            ([] {
+                return serveFile("./index.html");
+            });
+
+            CROW_ROUTE(m_app, "/assets/<path>")
+            ([](const std::string &file)
+            {
+                return serveFile("./" + file);
+            });
+
+            CROW_ROUTE(m_app, "/api/<string>/<string>")
+            ([this](const crow::request& req, std::string module, std::string apiCall) {
+                std::promise<crow::response> promise;
+                auto future = promise.get_future();
+                {
+                    std::scoped_lock lock(m_requestQueueMutex);
+                    m_requestQueue.push({
+                        .promise = std::move(promise),
+                        .module = std::move(module),
+                        .apiCall = std::move(apiCall),
+                        .apiCallBody = req.body
+                    });
+                }
+
+                if (future.wait_for(5s) == std::future_status::timeout) {
+                    // timeout reached... request won't be handled
+                    return crow::response(500, "sim thread failed to process request in time");
+                }
+
+                return future.get();
+            });
+        }
+        void start() {
+            m_webserverThread.emplace([&]() {this->startWebserver();});
+        }
+
+        void handleRequests() {
+            {   // get current requests
+                std::scoped_lock lock(m_requestQueueMutex);
+                std::swap(m_requestQueue, m_handleQueue);
+            }
+
+            // handle all requests
+            while (!m_handleQueue.empty())
+                handleSingleRequest();
+        }
+
+        /*!
+         * @brief register an api call
+         * @param entityID entity ID of registering entity
+         * @param apiName name of endpoint to call
+         * @param callback function to handle the api call
+         * @throws std::runtrime_error if apiName is duplicate
+         */
+        void registerApiCall(EntityID_t entityID, std::string apiName, std::function<crow::response(std::string)> callback) {
+            if (m_registeredAPICalls.contains(entityID)) {
+                auto& regApiVec = m_registeredAPICalls.at(entityID);
+                // check if vector contains duplicate entry
+                if (std::ranges::find_if(regApiVec,
+                    [&apiName](auto elem){ return elem.apiCall == apiName;}) != regApiVec.end()) {
+                    throw std::runtime_error("duplicate api name found. Invalid api name");
+                }
+
+                regApiVec.emplace_back(apiName, callback);
+                return;
+            }
+
+            m_registeredAPICalls.emplace(entityID, std::vector<registeredAPICalls_t>{
+                {
+                    std::move(apiName),
+                    std::move(callback)
+                }
+            });
+        }
+    private:
+        static crow::response generateServerError(size_t errorID, std::string_view errorMessage);
+
+        static crow::response serveFile(const std::string& path) {
+            std::ifstream file(path, std::ios::binary);
+
+            if (!file)
+                return crow::response(404);
+
+            std::ostringstream buffer;
+            buffer << file.rdbuf();
+
+            crow::response res;
+            res.body = buffer.str();
+            return res;
+        }
+
+        void handleSingleRequest();
+
+        void startWebserver() {
+            m_app.port(18080).loglevel(crow::LogLevel::Warning).multithreaded().run_async();
+        }
+
+        struct requestQueueData_t {
+            std::promise<crow::response> promise;
+            std::string module;
+            std::string apiCall;
+            std::string apiCallBody;
+        };
+
+        struct registeredAPICalls_t {
+            std::string apiCall;
+            std::function<crow::response(std::string)> apiCallback;
+        };
+
+        std::mutex m_requestQueueMutex;
+        std::queue<requestQueueData_t> m_requestQueue; // queue to write the requests to
+        std::queue<requestQueueData_t> m_handleQueue; // queue that is read and handled in the cycle
+
+        std::unordered_map<EntityID_t, std::vector<registeredAPICalls_t>> m_registeredAPICalls;
+        crow::SimpleApp m_app;
+
+        std::optional<std::jthread> m_webserverThread;
+    };
+
+    class visualizationProvider_t {
+    public:
+        void registerApiCall(std::string apiName, const std::function<crow::response(std::string)> &callback) const;
+    private:
+        friend class Runtime_t;
+        visualizationProvider_t(const EntityID_t entityID, VisualizationHandler_t& visualizationHandler) :
+        m_entityID(entityID), m_visualizationHandler(visualizationHandler) {};
+
+        EntityID_t m_entityID;
+        VisualizationHandler_t& m_visualizationHandler;
+    };
+
     struct runtimeEntityContext_t {
         EntityID_t entityID;
         IOProvider_t& ioProvider;
         TerminalProvider_t& terminalProvider;
+        visualizationProvider_t& visualizationProvider;
     };
 
     struct runtimeEntityEntry {
@@ -564,6 +721,7 @@ namespace sim::framework {
         runtimeEntity_t& entity;
         IOProvider_t ioProvider;
         TerminalProvider_t terminalProvider;
+        visualizationProvider_t visualizationProvider;
     };
 
     /*!
@@ -604,6 +762,7 @@ namespace sim::framework {
         IOHandler_t m_ioHandler;
 
         std::optional<TerminalProvider_t> m_terminalProvider;
+        VisualizationHandler_t m_visualizationHandler;
         std::vector<runtimeEntityEntry> m_entries;
         EntityID_t m_entityIdCounter = 1; //! id counter for generating EntityIDs
         TerminalHandler_t m_terminalHandler;

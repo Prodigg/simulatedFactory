@@ -20,7 +20,16 @@ include(FetchContent)
 FetchContent_Declare(json URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz)
 FetchContent_MakeAvailable(json)
 
+FetchContent_Declare(
+        crow
+        GIT_REPOSITORY https://github.com/CrowCpp/Crow.git
+        GIT_TAG v1.3.3
+)
+
+FetchContent_MakeAvailable(crow)
+
 target_link_libraries(simulatedFactory PRIVATE
         AdsLib::AdsLib
         nlohmann_json::nlohmann_json
+        Crow::Crow
 )

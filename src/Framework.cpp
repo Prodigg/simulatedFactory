@@ -7,7 +7,6 @@
 #include <iostream>
 #include <AdsLib/AdsLib.h>
 #include <nlohmann/json.hpp>
-#include <oneapi/tbb/task_group.h>
 
 #if __linux__
 #include "osSpecific/LinuxSpecific.h"
@@ -31,6 +30,10 @@ sim::framework::IOProvider_t & sim::runtimeEntity_t::getIOProvider() const {
 
 sim::framework::TerminalProvider_t & sim::runtimeEntity_t::getTerminalProvider() const {
     return sim::framework::Runtime_t::GetInstance().getEntityContext(m_entityID).terminalProvider;
+}
+
+sim::framework::visualizationProvider_t & sim::runtimeEntity_t::getVisualizationProvider() const {
+    return sim::framework::Runtime_t::GetInstance().getEntityContext(m_entityID).visualizationProvider;
 }
 
 std::string sim::framework::IOHandler_t::getFullyQualifiedName(const EntityID_t entityId, IoID_t inputIoID) {
@@ -149,6 +152,59 @@ void sim::framework::TerminalHandler_t::cycle() {
     std::cerr.flush();
 }
 
+crow::response sim::framework::VisualizationHandler_t::generateServerError(size_t errorID,
+    std::string_view errorMessage) {
+    const json err = {
+        { "errorID", errorID },
+        {"errorMessage", errorMessage }
+    };
+    return crow::response(500, err.dump(3));
+}
+
+void sim::framework::VisualizationHandler_t::handleSingleRequest() {
+    auto& request = m_handleQueue.front();
+    EntityID_t entityID = 0;
+    try {
+        entityID = Runtime_t::GetInstance().getEntityID(request.module);
+    } catch (std::runtime_error e) {
+        request.promise.set_value(generateServerError(1001, e.what()));
+        m_handleQueue.pop();
+        return;
+    }
+
+    // resolve api call
+    if (!m_registeredAPICalls.contains(entityID)) {
+        request.promise.set_value(generateServerError(1002, "entity has none api calls registered"));
+        m_handleQueue.pop();
+        return;
+    }
+
+    auto& registeredApiCallVec = m_registeredAPICalls.at(entityID);
+    const auto it = std::ranges::find_if(registeredApiCallVec,
+            [&request](const registeredAPICalls_t& elem){return elem.apiCall == request.apiCall;});
+    if (it == registeredApiCallVec.end()) {
+        request.promise.set_value(generateServerError(
+            1003,
+            "entity has none api call that has the name " + request.apiCall));
+        m_handleQueue.pop();
+        return;
+    }
+
+    // call the api callback
+    try {
+        request.promise.set_value(it->apiCallback(request.apiCallBody));
+    } catch (std::exception e) {
+        request.promise.set_value(generateServerError(1004, e.what()));
+    }
+
+    m_handleQueue.pop();
+}
+
+void sim::framework::visualizationProvider_t::registerApiCall(std::string apiName,
+    const std::function<crow::response(std::string)> &callback) const {
+    m_visualizationHandler.registerApiCall(m_entityID, apiName, callback);
+}
+
 void sim::framework::config_t::generateConfig(const std::string_view path, const std::unordered_map<EntityID_t, IOEntityRegistry_t> &ioMap) {
     if (path.empty())
         throw std::runtime_error("configuration file name is empty");
@@ -195,6 +251,7 @@ void sim::framework::config_t::applyConfig(const std::string_view path, std::uno
     }
 
     json configData = json::parse(file);
+    m_readConfig = configData;
 
     file.close();
 
@@ -385,6 +442,7 @@ void sim::framework::IOHandler_t::readWriteData() {
 void sim::framework::IOHandler_t::readConfig(const std::string_view path) {
     config_t config;
     config.applyConfig(path, m_ioToAdsMap);
+    m_readConfig = config.getConfig();
 
     initialize(config.remoteIpV4(), config.getRemoteNetId(), config.getLocalNetId(), config.remotePort());
 }
@@ -421,16 +479,20 @@ void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, b
         }
     });
 
-    //m_ioHandler.m_ioToAdsMap.emplace("testEntity::test", "NodeRed.bIsLightOn");
-    //m_ioHandler.initialize(ipV4, remoteNetID, localNetID, port);
+    m_visualizationHandler.initialize();
+
+    m_visualizationHandler.registerApiCall(0, "getConfig", [&](std::string body) {
+        return m_ioHandler.getConfig().dump(3);
+    });
+
+    m_visualizationHandler.start();
 }
 
 void sim::framework::Runtime_t::runtimeStart() {
-
-
     while (true) {
         m_ioHandler.readWriteData();
         m_terminalHandler.cycle();
+        m_visualizationHandler.handleRequests();
         for (const runtimeEntityEntry & entry: m_entries) {
             entry.entity.cycle();
         }
@@ -443,7 +505,8 @@ sim::framework::EntityID_t sim::framework::Runtime_t::registerEntity(runtimeEnti
         std::string(instanceName),
         instance,
         IOProvider_t(m_entityIdCounter, m_ioHandler),
-        TerminalProvider_t(m_entityIdCounter, m_terminalHandler));
+        TerminalProvider_t(m_entityIdCounter, m_terminalHandler),
+        visualizationProvider_t(m_entityIdCounter, m_visualizationHandler));
 
     return m_entityIdCounter++;
 }
@@ -454,9 +517,12 @@ sim::framework::runtimeEntityContext_t sim::framework::Runtime_t::getEntityConte
     if (it == m_entries.end())
         throw std::runtime_error("Entity ID not found");
 
-    return {entityID,
-        it->ioProvider,
-        it->terminalProvider};
+    return {
+        .entityID = entityID,
+        .ioProvider = it->ioProvider,
+        .terminalProvider = it->terminalProvider,
+        .visualizationProvider = it->visualizationProvider
+    };
 }
 
 std::string sim::framework::Runtime_t::getEntityName(EntityID_t entityID) {
