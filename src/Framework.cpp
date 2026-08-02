@@ -36,6 +36,10 @@ sim::framework::visualizationProvider_t & sim::runtimeEntity_t::getVisualization
     return sim::framework::Runtime_t::GetInstance().getEntityContext(m_entityID).visualizationProvider;
 }
 
+sim::framework::EntityLogger_t & sim::runtimeEntity_t::getLogger() const {
+    return sim::framework::Runtime_t::GetInstance().getEntityContext(m_entityID).entityLogger;
+}
+
 std::string sim::framework::IOHandler_t::getFullyQualifiedName(const EntityID_t entityId, IoID_t inputIoID) {
     std::string_view ioName;
     if (!m_ioMap.contains(entityId))
@@ -203,6 +207,18 @@ void sim::framework::VisualizationHandler_t::handleSingleRequest() {
 void sim::framework::visualizationProvider_t::registerApiCall(std::string apiName,
     const std::function<crow::response(std::string)> &callback) const {
     m_visualizationHandler.registerApiCall(m_entityID, apiName, callback);
+}
+
+uint32_t sim::framework::LoggerHandler_t::attachLogConsumer(LogConsumer_t &logConsumer) {
+    m_logConsumers.emplace_back(++m_currentLogConsumerID, logConsumer);
+    return m_currentLogConsumerID;
+}
+
+void sim::framework::LoggerHandler_t::writeLog(const LogLevel_t logLevel, const std::string_view logMessage,
+    const nlohmann::json &additionalData, const std::source_location location) {
+    for (const auto &[logConsumerID, logConsumer]: m_logConsumers) {
+        logConsumer.writeLog(logLevel, logMessage, additionalData, location);
+    }
 }
 
 void sim::framework::config_t::generateConfig(const std::string_view path, const std::unordered_map<EntityID_t, IOEntityRegistry_t> &ioMap) {
@@ -406,8 +422,12 @@ void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId rem
     bhf::ads::SetLocalAddress(localNetID);
     m_route.emplace(std::string(ipV4), remoteNetID, port);
 
-    std::cout << "IOHandler_t: Connected to PLC: " << std::string(ipV4) << " (" << localNetID << ") : " << port << std::endl;
-
+    std::stringstream ss;
+    ss << localNetID;
+    std::string localNetIdStr = ss.str();
+    Runtime_t::GetInstance().getLogger().logInfo(
+        std::format("IOHandler_t: Connected to PLC: {} ({}) : {}", ipV4, localNetIdStr, port)
+        );
     std::vector<std::string> readList;
     std::vector<std::string> writeList;
 
@@ -429,7 +449,7 @@ void sim::framework::IOHandler_t::initialize(std::string_view ipV4, AmsNetId rem
     m_adsWrite.emplace(*m_route, writeList);
     m_adsRead.emplace(*m_route, readList);
 
-    std::cout << "IOHandler_t: ads read and write objects initialized." << std::endl;
+    Runtime_t::GetInstance().getLogger().logInfo("ads read and write objects initialized");
 }
 
 void sim::framework::IOHandler_t::readWriteData() {
@@ -447,18 +467,120 @@ void sim::framework::IOHandler_t::readConfig(const std::string_view path) {
     initialize(config.remoteIpV4(), config.getRemoteNetId(), config.getLocalNetId(), config.remotePort());
 }
 
+void sim::framework::StdOutLogConsumer_t::writeLog(
+    LogLevel_t logLevel,
+    std::string_view logMessage,
+    const nlohmann::json& additionalData,
+    const std::source_location location)
+{
+    constexpr auto ANSI_RESET = "\033[0m";
+    constexpr auto ANSI_BOLD  = "\033[1m";
+
+    constexpr auto ANSI_CYAN        = "\033[36m";
+    constexpr auto ANSI_BLUE        = "\033[34m";
+    constexpr auto ANSI_GREEN       = "\033[32m";
+    constexpr auto ANSI_YELLOW      = "\033[33m";
+    constexpr auto ANSI_RED         = "\033[31m";
+    constexpr auto ANSI_BRIGHT_RED  = "\033[91m";
+
+    constexpr auto TRACE     = "[TRACE   ]";
+    constexpr auto DEBUG     = "[DEBUG   ]";
+    constexpr auto INFO      = "[INFO    ]";
+    constexpr auto WARNING   = "[WARNING ]";
+    constexpr auto ERROR     = "[ERROR   ]";
+    constexpr auto CRITICAL  = "[CRITICAL]";
+
+    const char* levelText = nullptr;
+    const char* levelColor = nullptr;
+
+    switch (logLevel)
+    {
+        case LogLevel_t::TRACE:
+            levelText = TRACE;
+            levelColor = ANSI_CYAN;
+            break;
+
+        case LogLevel_t::DEBUG:
+            levelText = DEBUG;
+            levelColor = ANSI_BLUE;
+            break;
+
+        case LogLevel_t::INFO:
+            levelText = INFO;
+            levelColor = ANSI_GREEN;
+            break;
+
+        case LogLevel_t::WARNING:
+            levelText = WARNING;
+            levelColor = ANSI_YELLOW;
+            break;
+
+        case LogLevel_t::ERROR:
+            levelText = ERROR;
+            levelColor = ANSI_RED;
+            break;
+
+        case LogLevel_t::CRITICAL:
+            levelText = CRITICAL;
+            levelColor = ANSI_BRIGHT_RED;
+            break;
+    }
+
+    const auto now = std::chrono::system_clock::now();
+    const auto time = std::chrono::system_clock::to_time_t(now);
+
+    std::tm tm{};
+
+    localtime_r(&time, &tm);
+
+    const auto milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()
+        ) % 1000;
+
+    std::ostringstream timestamp;
+    timestamp
+        << std::put_time(&tm, "%Y-%m-%d %H:%M:%S")
+        << '.'
+        << std::setfill('0')
+        << std::setw(3)
+        << milliseconds.count();
+
+
+    std::cout
+        << timestamp.str()
+        << " "
+        << levelColor
+        << ANSI_BOLD
+        << levelText
+        << ANSI_RESET
+        << " ["
+        << location.file_name()
+        << ":"
+        << location.line()
+        << " "
+        << location.function_name()
+        << "] "
+        << logMessage;
+    std::cout << std::endl; //TODO: make this a setting or dependent on the log level
+}
+
 sim::framework::Runtime_t& sim::framework::Runtime_t::GetInstance() {
     static Runtime_t inst; // created on first call
     return inst;
 }
 
-void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, bool generateConfig) {
+void sim::framework::Runtime_t::initializeRuntime(const std::string_view configPath, const bool generateConfig) {
+    m_logger.emplace(m_loggerHandler);
+    m_loggerHandler.attachLogConsumer(m_stdOutLogConsumer);
+    m_logger->logInfo("Logger initialized");
+
     for (const runtimeEntityEntry & entry: m_entries) {
         entry.entity.init();
     }
     if (generateConfig) {
         m_ioHandler.generateConfig(configPath);
-        std::cout << "Config written to: " << configPath << std::endl;
+        m_logger->logInfo(std::string("Config written to: ") + configPath);
         exit(EXIT_SUCCESS);
     }
 
@@ -473,7 +595,6 @@ void sim::framework::Runtime_t::initializeRuntime(std::string_view configPath, b
                 std::cout << entry.entityID << ": " << entry.entityName << "\n";
             }
             std::cout.flush();
-            return;
         } else {
             std::cerr << arg << " is not a recognised argument" << std::endl;
         }
@@ -506,7 +627,8 @@ sim::framework::EntityID_t sim::framework::Runtime_t::registerEntity(runtimeEnti
         instance,
         IOProvider_t(m_entityIdCounter, m_ioHandler),
         TerminalProvider_t(m_entityIdCounter, m_terminalHandler),
-        visualizationProvider_t(m_entityIdCounter, m_visualizationHandler));
+        visualizationProvider_t(m_entityIdCounter, m_visualizationHandler),
+        EntityLogger_t(m_entityIdCounter, m_loggerHandler));
 
     return m_entityIdCounter++;
 }
@@ -521,7 +643,8 @@ sim::framework::runtimeEntityContext_t sim::framework::Runtime_t::getEntityConte
         .entityID = entityID,
         .ioProvider = it->ioProvider,
         .terminalProvider = it->terminalProvider,
-        .visualizationProvider = it->visualizationProvider
+        .visualizationProvider = it->visualizationProvider,
+        .entityLogger = it->entityLogger
     };
 }
 

@@ -17,6 +17,7 @@
 #include <ranges>
 #include <functional>
 #include <utility>
+#include <source_location>
 
 namespace sim::framework {
     class Runtime_t;
@@ -25,6 +26,7 @@ namespace sim::framework {
     struct runtimeEntityContext_t;
     class TerminalProvider_t;
     class visualizationProvider_t;
+    class EntityLogger_t;
 
     using EntityID_t = uint32_t;
 
@@ -59,6 +61,7 @@ namespace sim {
         [[nodiscard]] framework::IOProvider_t& getIOProvider() const;
         [[nodiscard]] framework::TerminalProvider_t& getTerminalProvider() const;
         [[nodiscard]] framework::visualizationProvider_t& getVisualizationProvider() const;
+        [[nodiscard]] framework::EntityLogger_t& getLogger() const;
     private:
         framework::EntityID_t m_entityID;
     };
@@ -723,11 +726,80 @@ namespace sim::framework {
         VisualizationHandler_t& m_visualizationHandler;
     };
 
+    enum class LogLevel_t {
+        TRACE = 0,
+        DEBUG,
+        INFO,
+        WARNING,
+        ERROR,
+        CRITICAL
+    };
+
+    /*!
+     * @brief the log consumer is a interface for any consumer and is used to write the logs
+     */
+    class LogConsumer_t {
+    public:
+        virtual void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location) = 0;
+        virtual ~LogConsumer_t() = default;
+    };
+
+    class LoggerHandler_t {
+    public:
+        uint32_t attachLogConsumer(LogConsumer_t& logConsumer);
+        void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json& additionalData, std::source_location location);
+    private:
+        struct LogConsumerListElement_t {
+            uint32_t logConsumerID;
+            LogConsumer_t& logConsumer;
+        };
+        std::vector<LogConsumerListElement_t> m_logConsumers;
+        uint32_t m_currentLogConsumerID = 0;
+    };
+
+    class Logger_t {
+    public:
+        explicit Logger_t(LoggerHandler_t& loggerHandler) : m_loggerHandler(loggerHandler) {};
+
+        virtual void logTrace(const std::string_view logMessage, const std::source_location location = std::source_location::current()) const { logTrace(logMessage, nlohmann::json(), location); }
+        virtual void logTrace(const std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location = std::source_location::current()) const { m_loggerHandler.writeLog(LogLevel_t::TRACE, logMessage, additionalData, location); }
+        virtual void logDebug(const std::string_view logMessage, const std::source_location location = std::source_location::current()) const { logDebug(logMessage, nlohmann::json(), location); }
+        virtual void logDebug(const std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location = std::source_location::current()) const { m_loggerHandler.writeLog(LogLevel_t::DEBUG, logMessage, additionalData, location); }
+        virtual void logInfo(const std::string_view logMessage, const std::source_location location = std::source_location::current()) const { logInfo(logMessage, nlohmann::json(), location); }
+        virtual void logInfo(const std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location = std::source_location::current()) const { m_loggerHandler.writeLog(LogLevel_t::INFO, logMessage, additionalData, location); }
+        virtual void logWarning(const std::string_view logMessage, const std::source_location location = std::source_location::current()) const { logWarning(logMessage, nlohmann::json(), location); }
+        virtual void logWarning(const std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location = std::source_location::current()) const {m_loggerHandler.writeLog(LogLevel_t::WARNING, logMessage, additionalData, location); }
+        virtual void logError(const std::string_view logMessage, const std::source_location location = std::source_location::current()) const { logError(logMessage, nlohmann::json(), location); }
+        virtual void logError(const std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location = std::source_location::current()) const { m_loggerHandler.writeLog(LogLevel_t::ERROR, logMessage, additionalData, location); }
+        virtual void logCritical(const std::string_view logMessage, const std::source_location location = std::source_location::current()) const { logCritical(logMessage, nlohmann::json(), location); }
+        virtual void logCritical(const std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location = std::source_location::current()) const { m_loggerHandler.writeLog(LogLevel_t::CRITICAL, logMessage, additionalData, location); }
+
+        virtual ~Logger_t() = default;
+    private:
+        LoggerHandler_t& m_loggerHandler;
+    };
+
+    class EntityLogger_t : public Logger_t {
+    public:
+        EntityLogger_t(const EntityID_t entityID, LoggerHandler_t& loggerHandler) :
+        Logger_t(loggerHandler),
+        m_entityID(entityID) {};
+    private:
+        EntityID_t m_entityID;
+    };
+
+    class StdOutLogConsumer_t : public LogConsumer_t {
+        public:
+        void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json &additionalData,
+            const std::source_location location) override;
+    };
+
     struct runtimeEntityContext_t {
         EntityID_t entityID;
         IOProvider_t& ioProvider;
         TerminalProvider_t& terminalProvider;
         visualizationProvider_t& visualizationProvider;
+        EntityLogger_t& entityLogger;
     };
 
     struct runtimeEntityEntry {
@@ -737,6 +809,7 @@ namespace sim::framework {
         IOProvider_t ioProvider;
         TerminalProvider_t terminalProvider;
         visualizationProvider_t visualizationProvider;
+        EntityLogger_t entityLogger;
     };
 
     /*!
@@ -770,6 +843,8 @@ namespace sim::framework {
         void destroyEntityID(EntityID_t entityID);
         std::string getEntityName(EntityID_t entityID);
         EntityID_t getEntityID(std::string entityName);
+
+        [[nodiscard]] const Logger_t& getLogger() const { return m_logger.value(); }
     protected:
         Runtime_t() = default;
 
@@ -781,6 +856,10 @@ namespace sim::framework {
         std::vector<runtimeEntityEntry> m_entries;
         EntityID_t m_entityIdCounter = 1; //! id counter for generating EntityIDs
         TerminalHandler_t m_terminalHandler;
+
+        StdOutLogConsumer_t m_stdOutLogConsumer;
+        LoggerHandler_t m_loggerHandler;
+        std::optional<Logger_t> m_logger;
     };
 }
 

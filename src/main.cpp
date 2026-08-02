@@ -8,11 +8,12 @@ class testEntity_t : public sim::runtimeEntity_t {
     void cycle() override {
     }
     void init() override {
-        std::cout << "Initialized with ID: " << getEntityID() << "\n";
+        getLogger().logInfo(std::format("Initialized with ID: {}", getEntityID()));
         std::string inputName = "test";
         testInput = this->getIOProvider().registerInput(inputName, sim::framework::IOType_t::BOOL);
-        this->getTerminalProvider().registerCMD("currentTestInput", [&](std::string_view input) {
-            std::cout << "testEntity::test: " << getIOProvider().readInput<bool>(testInput) << "\n";
+        this->getTerminalProvider().registerCMD("currentTestInput", [&](std::string_view arg) {
+            getLogger().logInfo(
+                std::format("testEntity::test: {}", getIOProvider().readInput<bool>(testInput)));
         });
     }
     private:
@@ -27,12 +28,14 @@ int main(int argc, char** argv) {
 
     sim::framework::Runtime_t::GetInstance();
 
-    testObject_t testEntity;
+    testEntity_t testEntity;
+
+    testObject_t testObject;
     sim::conveyorBelt_t<testObject_t, 3> conveyorBelt("conveyor");
     conveyorBelt.setMoveInterval(std::chrono::seconds(1));
 
     sim::objectGenerator_t<testObject_t> generator("generator");
-    generator.setSpawnElement(testEntity);
+    generator.setSpawnElement(testObject);
     generator.setSpawnInterval(std::chrono::seconds(5)).spawnContinuous(true).spawn();
 
     sim::EntityIOAdapter_t<testObject_t> conveyorBeltInAdapter(generator.getOutput(), conveyorBelt.getInput());
