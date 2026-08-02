@@ -118,7 +118,7 @@ void sim::framework::TerminalHandler_t::cycle() {
     // find module name
     try {
         entityID = Runtime_t::GetInstance().getEntityID(moduleName);
-    } catch (std::runtime_error e) {
+    } catch (std::runtime_error& e) {
         std::cerr << "Failed to find module name: " << moduleName << std::endl;
         return;
     }
@@ -158,7 +158,7 @@ crow::response sim::framework::VisualizationHandler_t::generateServerError(size_
         { "errorID", errorID },
         {"errorMessage", errorMessage }
     };
-    return crow::response(500, err.dump(3));
+    return {500, err.dump(3)};
 }
 
 void sim::framework::VisualizationHandler_t::handleSingleRequest() {
@@ -166,7 +166,7 @@ void sim::framework::VisualizationHandler_t::handleSingleRequest() {
     EntityID_t entityID = 0;
     try {
         entityID = Runtime_t::GetInstance().getEntityID(request.module);
-    } catch (std::runtime_error e) {
+    } catch (std::runtime_error& e) {
         request.promise.set_value(generateServerError(1001, e.what()));
         m_handleQueue.pop();
         return;
@@ -174,7 +174,7 @@ void sim::framework::VisualizationHandler_t::handleSingleRequest() {
 
     // resolve api call
     if (!m_registeredAPICalls.contains(entityID)) {
-        request.promise.set_value(generateServerError(1002, "entity has none api calls registered"));
+        request.promise.set_value(generateServerError(1002, "entity has no api calls registered"));
         m_handleQueue.pop();
         return;
     }
@@ -185,7 +185,7 @@ void sim::framework::VisualizationHandler_t::handleSingleRequest() {
     if (it == registeredApiCallVec.end()) {
         request.promise.set_value(generateServerError(
             1003,
-            "entity has none api call that has the name " + request.apiCall));
+            "entity has no api call that has the name: " + request.apiCall));
         m_handleQueue.pop();
         return;
     }
@@ -193,7 +193,7 @@ void sim::framework::VisualizationHandler_t::handleSingleRequest() {
     // call the api callback
     try {
         request.promise.set_value(it->apiCallback(request.apiCallBody));
-    } catch (std::exception e) {
+    } catch (std::exception& e) {
         request.promise.set_value(generateServerError(1004, e.what()));
     }
 

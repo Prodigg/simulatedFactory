@@ -578,13 +578,13 @@ namespace sim::framework {
 
             CROW_ROUTE(m_app, "/")
             ([] {
-                return serveFile("./index.html");
+                return serveFile("./index.html"); //TODO: make served file root configurable
             });
 
             CROW_ROUTE(m_app, "/assets/<path>")
             ([](const std::string &file)
             {
-                return serveFile("./" + file);
+                return serveFile("./" + file); //TODO: make served file route configurable
             });
 
             CROW_ROUTE(m_app, "/api/<string>/<string>")
@@ -607,6 +607,21 @@ namespace sim::framework {
                 }
 
                 return future.get();
+            });
+
+            CROW_WEBSOCKET_ROUTE(m_app, "/ws")
+            .onopen([&](crow::websocket::connection& conn){
+                conn.send_text("hello from websocket");
+            })
+            .onclose([&](crow::websocket::connection& conn, const std::string& reason, uint16_t){
+                std::cout << "websocket closed: " << reason << std::endl;
+                conn.close();
+            })
+            .onmessage([&](crow::websocket::connection& conn, const std::string& data, const bool is_binary){
+                if (!is_binary) // Only handle text requests
+                    conn.send_text("message received " + data);
+                else
+                    conn.close("binary mode is not supported", crow::websocket::CloseStatusCode::UnacceptableData);
             });
         }
         void start() {
