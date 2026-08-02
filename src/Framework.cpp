@@ -156,13 +156,166 @@ void sim::framework::TerminalHandler_t::cycle() {
     std::cerr.flush();
 }
 
+void sim::framework::VisualizationHandler_t::initialize() {
+    using namespace std::chrono_literals;
+
+    CROW_ROUTE(m_app, "/api/status")([](){
+        crow::json::wvalue json;
+        json["status"] = "ok";
+        return json;
+    });
+
+    CROW_ROUTE(m_app, "/")
+    ([] {
+        return serveFile("./index.html"); //TODO: make served file root configurable
+    });
+
+    CROW_ROUTE(m_app, "/assets/<path>")
+    ([](const std::string &file)
+    {
+        return serveFile("./" + file); //TODO: make served file route configurable
+    });
+
+    CROW_ROUTE(m_app, "/api/<string>/<string>")
+    ([this](const crow::request& req, std::string module, std::string apiCall) {
+        std::promise<crow::response> promise;
+        auto future = promise.get_future();
+        {
+            std::scoped_lock lock(m_requestQueueMutex);
+            m_requestQueue.push({
+                .promise = std::move(promise),
+                .module = std::move(module),
+                .apiCall = std::move(apiCall),
+                .apiCallBody = req.body
+            });
+        }
+
+        if (future.wait_for(5s) == std::future_status::timeout) {
+            // timeout reached... request won't be handled
+            Runtime_t::GetInstance().getLogger().logError(std::format("sim thread failed to process request in time. {}/{}", module, apiCall));
+            return crow::response(500, "sim thread failed to process request in time");
+        }
+
+        return future.get();
+    });
+
+    CROW_WEBSOCKET_ROUTE(m_app, "/ws")
+            .onopen([&](crow::websocket::connection& conn){
+                conn.send_text("hello from websocket");
+            })
+            .onclose([&](crow::websocket::connection& conn, const std::string& reason, uint16_t){
+                Runtime_t::GetInstance().getLogger().logInfo(std::format("Websocket Log Closed ({}): {}", conn.get_remote_ip(), reason));
+                conn.close();
+            })
+            .onmessage([&](crow::websocket::connection& conn, const std::string& data, const bool is_binary){
+                if (!is_binary) // Only handle text requests
+                    conn.send_text("message received " + data);
+                else
+                    conn.close("binary mode is not supported", crow::websocket::CloseStatusCode::UnacceptableData);
+            });
+
+    CROW_WEBSOCKET_ROUTE(m_app, "/ws/log")
+            .onopen([&](crow::websocket::connection& conn){
+                {
+                    std::scoped_lock mux(m_websocketLogMutex);
+                    m_websocketLogClient.emplace(&conn);
+                }
+                Runtime_t::GetInstance().getLogger().logInfo(std::format("Websocket Log connection opened to: {}", conn.get_remote_ip()));
+            })
+            .onclose([&](crow::websocket::connection& conn, const std::string& reason, uint16_t){
+                {
+                    std::scoped_lock mux(m_websocketLogMutex);
+                    m_websocketLogClient.erase(&conn);
+                }
+                Runtime_t::GetInstance().getLogger().logInfo(std::format("Websocket Log Closed ({}): {}", conn.get_remote_ip(), reason));
+                conn.close();
+            })
+            .onmessage([&](crow::websocket::connection& conn, const std::string& data, const bool is_binary){
+                Runtime_t::GetInstance().getLogger().logWarning(std::format("Closing Websocket Log Connection due to client writing to it ({})", conn.get_remote_ip()));
+                conn.close("route is only for receiving logs", crow::websocket::CloseStatusCode::UnacceptableData);
+            });
+}
+
+void sim::framework::VisualizationHandler_t::handleRequests() {
+    {   // get current requests
+        std::scoped_lock lock(m_requestQueueMutex);
+        std::swap(m_requestQueue, m_handleQueue);
+    }
+
+    // handle all requests
+    while (!m_handleQueue.empty())
+        handleSingleRequest();
+}
+
+void sim::framework::VisualizationHandler_t::registerApiCall(EntityID_t entityID, std::string apiName,
+                                                             std::function<crow::response(std::string)> callback) {
+    if (m_registeredAPICalls.contains(entityID)) {
+        auto& regApiVec = m_registeredAPICalls.at(entityID);
+        // check if vector contains duplicate entry
+        if (std::ranges::find_if(regApiVec,
+                                 [&apiName](auto elem){ return elem.apiCall == apiName;}) != regApiVec.end()) {
+            throw std::runtime_error("duplicate api name found. Invalid api name");
+        }
+
+        regApiVec.emplace_back(apiName, callback);
+        return;
+    }
+
+    m_registeredAPICalls.emplace(entityID, std::vector<registeredAPICalls_t>
+        {{
+            std::move(apiName),
+            std::move(callback)
+            }
+        });
+}
+
+void sim::framework::VisualizationHandler_t::writeLog(LogLevel_t logLevel, std::string_view logMessage,
+    const nlohmann::json &additionalData, const std::source_location location, std::string_view timestamp) {
+    std::scoped_lock mux(m_websocketLogMutex);
+    if (m_websocketLogClient.empty())
+        return; // return no clients connected
+
+    const nlohmann::json json = {
+        {"LogLevel", logLevel},
+        {"LogLevelName", logLevelToString(logLevel)},
+        {"message", logMessage},
+        {"additionalData", additionalData},
+        {"timestamp", timestamp},
+        {
+            "location", {
+                {"file", location.file_name()},
+                {"line", location.line()},
+                {"function", location.function_name()}
+            }
+        },
+    };
+
+    for (const auto client: m_websocketLogClient) {
+        client->send_text(json.dump(3));
+    }
+}
+
 crow::response sim::framework::VisualizationHandler_t::generateServerError(size_t errorID,
-    std::string_view errorMessage) {
+                                                                           std::string_view errorMessage) {
     const json err = {
         { "errorID", errorID },
         {"errorMessage", errorMessage }
     };
     return {500, err.dump(3)};
+}
+
+crow::response sim::framework::VisualizationHandler_t::serveFile(const std::string &path) {
+    std::ifstream file(path, std::ios::binary);
+
+    if (!file)
+        return crow::response(404);
+
+    std::ostringstream buffer;
+    buffer << file.rdbuf();
+
+    crow::response res;
+    res.body = buffer.str();
+    return res;
 }
 
 void sim::framework::VisualizationHandler_t::handleSingleRequest() {
@@ -210,14 +363,70 @@ void sim::framework::visualizationProvider_t::registerApiCall(std::string apiNam
 }
 
 uint32_t sim::framework::LoggerHandler_t::attachLogConsumer(LogConsumer_t &logConsumer) {
+    std::scoped_lock mux(m_logConsumerMutex);
     m_logConsumers.emplace_back(++m_currentLogConsumerID, logConsumer);
     return m_currentLogConsumerID;
 }
 
+void sim::framework::LoggerHandler_t::startLogDispatcherThread() {
+    m_logDispatcherThread.emplace([this](const std::stop_token &stopToken) {
+        while (!stopToken.stop_requested()) {
+            dispatchLog();
+            std::this_thread::sleep_for(std::chrono::milliseconds(250));
+        }
+    });
+}
+
 void sim::framework::LoggerHandler_t::writeLog(const LogLevel_t logLevel, const std::string_view logMessage,
-    const nlohmann::json &additionalData, const std::source_location location) {
+                                               const nlohmann::json &additionalData, const std::source_location location) {
+    std::scoped_lock mux(m_logQueueMutex);
+    m_logQueue.emplace(logLevel, std::string(logMessage), additionalData, location, generateTimestamp());
+}
+
+void sim::framework::LoggerHandler_t::dispatchLog() {
+    {
+        std::scoped_lock mux(m_logQueueMutex);
+        if (m_logConsumers.empty())
+            return; // nothing to do, log is empty
+        std::swap(m_logQueue, m_handleLogQueue);
+    }
+
+    std::scoped_lock mux(m_logConsumerMutex);
+    while (!m_handleLogQueue.empty()) {
+        auto&[logLevel, logMessage, additionalData, location, timestamp] = m_handleLogQueue.front();
+        writeLogToConsumer(logLevel, logMessage, additionalData, location, timestamp);
+        m_handleLogQueue.pop();
+    }
+}
+
+std::string sim::framework::LoggerHandler_t::generateTimestamp() {
+    const auto now = std::chrono::system_clock::now();
+    const auto time = std::chrono::system_clock::to_time_t(now);
+
+    std::tm tm{};
+
+    localtime_r(&time, &tm);
+
+    const auto milliseconds =
+        std::chrono::duration_cast<std::chrono::milliseconds>(
+            now.time_since_epoch()
+        ) % 1000;
+
+    std::ostringstream timestamp;
+    timestamp
+        << std::put_time(&tm, "%Y-%m-%d %H:%M:%S")
+        << '.'
+        << std::setfill('0')
+        << std::setw(3)
+        << milliseconds.count();
+
+    return timestamp.str();
+}
+
+void sim::framework::LoggerHandler_t::writeLogToConsumer(LogLevel_t logLevel, std::string_view logMessage,
+    const nlohmann::json &additionalData, std::source_location location, std::string_view timestamp) {
     for (const auto &[logConsumerID, logConsumer]: m_logConsumers) {
-        logConsumer.writeLog(logLevel, logMessage, additionalData, location);
+        logConsumer.writeLog(logLevel, logMessage, additionalData, location, timestamp);
     }
 }
 
@@ -471,7 +680,8 @@ void sim::framework::StdOutLogConsumer_t::writeLog(
     LogLevel_t logLevel,
     std::string_view logMessage,
     const nlohmann::json& additionalData,
-    const std::source_location location)
+    const std::source_location location,
+    std::string_view timestamp)
 {
     constexpr auto ANSI_RESET = "\033[0m";
     constexpr auto ANSI_BOLD  = "\033[1m";
@@ -526,29 +736,9 @@ void sim::framework::StdOutLogConsumer_t::writeLog(
             break;
     }
 
-    const auto now = std::chrono::system_clock::now();
-    const auto time = std::chrono::system_clock::to_time_t(now);
-
-    std::tm tm{};
-
-    localtime_r(&time, &tm);
-
-    const auto milliseconds =
-        std::chrono::duration_cast<std::chrono::milliseconds>(
-            now.time_since_epoch()
-        ) % 1000;
-
-    std::ostringstream timestamp;
-    timestamp
-        << std::put_time(&tm, "%Y-%m-%d %H:%M:%S")
-        << '.'
-        << std::setfill('0')
-        << std::setw(3)
-        << milliseconds.count();
-
 
     std::cout
-        << timestamp.str()
+        << timestamp
         << " "
         << levelColor
         << ANSI_BOLD
@@ -562,7 +752,7 @@ void sim::framework::StdOutLogConsumer_t::writeLog(
         << location.function_name()
         << "] "
         << logMessage;
-    std::cout << std::endl; //TODO: make this a setting or dependent on the log level
+    std::cout << std::endl;
 }
 
 sim::framework::Runtime_t& sim::framework::Runtime_t::GetInstance() {
@@ -573,6 +763,8 @@ sim::framework::Runtime_t& sim::framework::Runtime_t::GetInstance() {
 void sim::framework::Runtime_t::initializeRuntime(const std::string_view configPath, const bool generateConfig) {
     m_logger.emplace(m_loggerHandler);
     m_loggerHandler.attachLogConsumer(m_stdOutLogConsumer);
+    m_loggerHandler.attachLogConsumer(m_visualizationHandler);
+    m_loggerHandler.startLogDispatcherThread();
     m_logger->logInfo("Logger initialized");
 
     for (const runtimeEntityEntry & entry: m_entries) {

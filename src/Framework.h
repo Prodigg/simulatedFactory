@@ -18,6 +18,7 @@
 #include <functional>
 #include <utility>
 #include <source_location>
+#include <unordered_set>
 
 namespace sim::framework {
     class Runtime_t;
@@ -568,79 +569,71 @@ namespace sim::framework {
         EntityID_t m_entityID;
     };
 
-    class VisualizationHandler_t {
+    enum class LogLevel_t {
+        TRACE = 0,
+        DEBUG,
+        INFO,
+        WARNING,
+        ERROR,
+        CRITICAL
+    };
+
+    /*!
+     * @brief the log consumer is a interface for any consumer and is used to write the logs
+     */
+    class LogConsumer_t {
     public:
-        void initialize() {
-            using namespace std::chrono_literals;
+        /*!
+         * @brief write a log
+         * @param logLevel
+         * @param logMessage message to log
+         * @param additionalData additional json data
+         * @param location call location
+         * @param timestamp timestamp of log message
+         */
+        virtual void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location, std::string_view timestamp) = 0;
+        virtual ~LogConsumer_t() = default;
 
-            CROW_ROUTE(m_app, "/api/status")([](){
-                crow::json::wvalue json;
-                json["status"] = "ok";
-                return json;
-            });
 
-            CROW_ROUTE(m_app, "/")
-            ([] {
-                return serveFile("./index.html"); //TODO: make served file root configurable
-            });
-
-            CROW_ROUTE(m_app, "/assets/<path>")
-            ([](const std::string &file)
-            {
-                return serveFile("./" + file); //TODO: make served file route configurable
-            });
-
-            CROW_ROUTE(m_app, "/api/<string>/<string>")
-            ([this](const crow::request& req, std::string module, std::string apiCall) {
-                std::promise<crow::response> promise;
-                auto future = promise.get_future();
-                {
-                    std::scoped_lock lock(m_requestQueueMutex);
-                    m_requestQueue.push({
-                        .promise = std::move(promise),
-                        .module = std::move(module),
-                        .apiCall = std::move(apiCall),
-                        .apiCallBody = req.body
-                    });
-                }
-
-                if (future.wait_for(5s) == std::future_status::timeout) {
-                    // timeout reached... request won't be handled
-                    return crow::response(500, "sim thread failed to process request in time");
-                }
-
-                return future.get();
-            });
-
-            CROW_WEBSOCKET_ROUTE(m_app, "/ws")
-            .onopen([&](crow::websocket::connection& conn){
-                conn.send_text("hello from websocket");
-            })
-            .onclose([&](crow::websocket::connection& conn, const std::string& reason, uint16_t){
-                std::cout << "websocket closed: " << reason << std::endl;
-                conn.close();
-            })
-            .onmessage([&](crow::websocket::connection& conn, const std::string& data, const bool is_binary){
-                if (!is_binary) // Only handle text requests
-                    conn.send_text("message received " + data);
-                else
-                    conn.close("binary mode is not supported", crow::websocket::CloseStatusCode::UnacceptableData);
-            });
+    protected:
+        static const char *logLevelToString(const LogLevel_t logLevel) {
+            switch (logLevel) {
+                case LogLevel_t::TRACE:
+                    return "TRACE";
+                case LogLevel_t::DEBUG:
+                    return "DEBUG";
+                case LogLevel_t::INFO:
+                    return "INFO";
+                case LogLevel_t::WARNING:
+                    return "WARNING";
+                case LogLevel_t::ERROR:
+                    return "ERROR";
+                case LogLevel_t::CRITICAL:
+                    return "CRITICAL";
+                default:
+                    return "UNKNOWN";
+            }
         }
+    };
+
+    class VisualizationHandler_t : public LogConsumer_t {
+    public:
+        /*!
+         * @brief initialize the visualization handler
+         */
+        void initialize();
+
+        /*!
+         * @brief start the visualization handler and webserver
+         */
         void start() {
             m_webserverThread.emplace([&]() {this->startWebserver();});
         }
 
-        void handleRequests() {
-            {   // get current requests
-                std::scoped_lock lock(m_requestQueueMutex);
-                std::swap(m_requestQueue, m_handleQueue);
-            }
-
-            // handle all requests
-            while (!m_handleQueue.empty())
-                handleSingleRequest();
-        }
+        /*!
+         * @brief handle all api request received and queued
+         */
+        void handleRequests();
 
         /*!
          * @brief register an api call
@@ -649,42 +642,15 @@ namespace sim::framework {
          * @param callback function to handle the api call
          * @throws std::runtrime_error if apiName is duplicate
          */
-        void registerApiCall(EntityID_t entityID, std::string apiName, std::function<crow::response(std::string)> callback) {
-            if (m_registeredAPICalls.contains(entityID)) {
-                auto& regApiVec = m_registeredAPICalls.at(entityID);
-                // check if vector contains duplicate entry
-                if (std::ranges::find_if(regApiVec,
-                    [&apiName](auto elem){ return elem.apiCall == apiName;}) != regApiVec.end()) {
-                    throw std::runtime_error("duplicate api name found. Invalid api name");
-                }
+        void registerApiCall(EntityID_t entityID, std::string apiName, std::function<crow::response(std::string)> callback);
 
-                regApiVec.emplace_back(apiName, callback);
-                return;
-            }
+        void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json &additionalData,
+            const std::source_location location, std::string_view timestamp) override;
 
-            m_registeredAPICalls.emplace(entityID, std::vector<registeredAPICalls_t>{
-                {
-                    std::move(apiName),
-                    std::move(callback)
-                }
-            });
-        }
     private:
         static crow::response generateServerError(size_t errorID, std::string_view errorMessage);
 
-        static crow::response serveFile(const std::string& path) {
-            std::ifstream file(path, std::ios::binary);
-
-            if (!file)
-                return crow::response(404);
-
-            std::ostringstream buffer;
-            buffer << file.rdbuf();
-
-            crow::response res;
-            res.body = buffer.str();
-            return res;
-        }
+        static crow::response serveFile(const std::string& path);
 
         void handleSingleRequest();
 
@@ -704,14 +670,21 @@ namespace sim::framework {
             std::function<crow::response(std::string)> apiCallback;
         };
 
+        //------------ REST API ----------
         std::mutex m_requestQueueMutex;
         std::queue<requestQueueData_t> m_requestQueue; // queue to write the requests to
         std::queue<requestQueueData_t> m_handleQueue; // queue that is read and handled in the cycle
 
         std::unordered_map<EntityID_t, std::vector<registeredAPICalls_t>> m_registeredAPICalls;
-        crow::SimpleApp m_app;
 
+        //------------ Webserver ----------
+        crow::SimpleApp m_app;
         std::optional<std::jthread> m_webserverThread;
+
+        //------------ websocket logs ----------
+        std::mutex m_websocketLogMutex;
+        std::unordered_set<crow::websocket::connection*> m_websocketLogClient;
+
     };
 
     class visualizationProvider_t {
@@ -726,35 +699,68 @@ namespace sim::framework {
         VisualizationHandler_t& m_visualizationHandler;
     };
 
-    enum class LogLevel_t {
-        TRACE = 0,
-        DEBUG,
-        INFO,
-        WARNING,
-        ERROR,
-        CRITICAL
-    };
-
     /*!
-     * @brief the log consumer is a interface for any consumer and is used to write the logs
+     * @brief this is the central system that handles the logs
      */
-    class LogConsumer_t {
-    public:
-        virtual void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json& additionalData, const std::source_location location) = 0;
-        virtual ~LogConsumer_t() = default;
-    };
-
     class LoggerHandler_t {
     public:
         uint32_t attachLogConsumer(LogConsumer_t& logConsumer);
+
+        void startLogDispatcherThread();
+
+        /*!
+         * @brief write a log, this function is thread safe
+         * @param logLevel
+         * @param logMessage
+         * @param additionalData
+         * @param location
+         */
         void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json& additionalData, std::source_location location);
+
+
     private:
+        /*!
+         * @brief generate a timestamp
+         * @return timestamp
+         */
+        static std::string generateTimestamp();
+
+        /*!
+         * @brief empty the queue and send every log message to the consumers
+         */
+        void dispatchLog();
+
+        /*!
+         * @brief write one log to the consumers
+         * @param logLevel
+         * @param logMessage
+         * @param additionalData
+         * @param location
+         * @param timestamp
+         */
+        void writeLogToConsumer(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json& additionalData, std::source_location location, std::string_view timestamp);
+
         struct LogConsumerListElement_t {
             uint32_t logConsumerID;
             LogConsumer_t& logConsumer;
         };
+        std::mutex m_logConsumerMutex;
         std::vector<LogConsumerListElement_t> m_logConsumers;
         uint32_t m_currentLogConsumerID = 0;
+
+        struct LogEntry_t {
+            LogLevel_t logLevel;
+            std::string logMessage;
+            nlohmann::json additionalData;
+            std::source_location location;
+            std::string timestamp;
+        };
+
+        std::mutex m_logQueueMutex;
+        std::queue<LogEntry_t> m_logQueue;
+        std::queue<LogEntry_t> m_handleLogQueue; // queue for the dispatching of error messages
+        std::optional<std::jthread> m_logDispatcherThread;
+
     };
 
     class Logger_t {
@@ -791,7 +797,7 @@ namespace sim::framework {
     class StdOutLogConsumer_t : public LogConsumer_t {
         public:
         void writeLog(LogLevel_t logLevel, std::string_view logMessage, const nlohmann::json &additionalData,
-            const std::source_location location) override;
+            const std::source_location location, std::string_view timestamp) override;
     };
 
     struct runtimeEntityContext_t {
