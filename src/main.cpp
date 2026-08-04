@@ -12,8 +12,10 @@ class testEntity_t : public sim::runtimeEntity_t {
         std::string inputName = "test";
         testInput = this->getIOProvider().registerInput(inputName, sim::framework::IOType_t::BOOL);
         this->getTerminalProvider().registerCMD("currentTestInput", [&](std::string_view arg) {
+            auto testInputData = getIOProvider().readInput<bool>(testInput);
             getLogger().logInfo(
-                std::format("testEntity::test: {}", getIOProvider().readInput<bool>(testInput)));
+                std::format("testEntity::test: {}", testInputData));
+        this->getVisualizationProvider().emmitVariableChange("test", {"inputState", testInputData});
         });
     }
     private:

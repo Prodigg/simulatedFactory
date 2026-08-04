@@ -201,10 +201,15 @@ void sim::framework::VisualizationHandler_t::initialize() {
 
     CROW_WEBSOCKET_ROUTE(m_app, "/ws")
             .onopen([&](crow::websocket::connection& conn){
-                conn.send_text("hello from websocket");
+                std::scoped_lock mux(m_websocketClientMutex);
+                m_websocketClients.emplace(&conn);
             })
             .onclose([&](crow::websocket::connection& conn, const std::string& reason, uint16_t){
-                Runtime_t::GetInstance().getLogger().logInfo(std::format("Websocket Log Closed ({}): {}", conn.get_remote_ip(), reason));
+                {
+                    std::scoped_lock mux(m_websocketClientMutex);
+                    m_websocketClients.erase(&conn);
+                }
+                Runtime_t::GetInstance().getLogger().logInfo(std::format("Websocket Closed ({}): {}", conn.get_remote_ip(), reason));
                 conn.close();
             })
             .onmessage([&](crow::websocket::connection& conn, const std::string& data, const bool is_binary){
@@ -295,6 +300,11 @@ void sim::framework::VisualizationHandler_t::writeLog(LogLevel_t logLevel, std::
     }
 }
 
+void sim::framework::VisualizationHandler_t::dispatchVariableChange() {
+    std::lock_guard mux(m_websocketProcessMutex);
+    m_websocketProcessCondition.notify_all();
+}
+
 crow::response sim::framework::VisualizationHandler_t::generateServerError(size_t errorID,
                                                                            std::string_view errorMessage) {
     const json err = {
@@ -357,9 +367,85 @@ void sim::framework::VisualizationHandler_t::handleSingleRequest() {
     m_handleQueue.pop();
 }
 
+void sim::framework::VisualizationHandler_t::websocketProcessChangesThreadMain() {
+    std::unique_lock cvMux(m_websocketProcessMutex);
+    m_websocketProcessCondition.wait(cvMux);
+
+    {
+        std::scoped_lock mux(m_websocketChangeBufferMutex);
+        if (m_websocketChangeBuffer.empty())
+            return;
+        std::swap(m_websocketChangeBuffer, m_websocketProcessBuffer);
+    }
+
+    for (websocketStateChangeData_t & processData: m_websocketProcessBuffer) {
+        const std::string msg = formateWSVariableChangeMessage(processData).dump(3);
+        std::scoped_lock mux(m_websocketClientMutex);
+        for (const auto client: m_websocketClients)
+            client->send_text(msg);
+    }
+    m_websocketProcessBuffer.clear();
+}
+
+void sim::framework::VisualizationHandler_t::commitWSVariableChange(websocketStateChangeData_t &&data) {
+    std::scoped_lock mux(m_websocketChangeBufferMutex);
+    m_websocketChangeBuffer.push_back(std::move(data));
+}
+
+bool sim::framework::VisualizationHandler_t::checkWSVariableChangeValid(std::string_view entityName, std::string_view variableName) {
+    if (entityName.empty()) {
+        Runtime_t::GetInstance().getLogger().logError(
+            std::format("websocket update origin entity empty invalid request. Variable name: {}",
+                variableName));
+        return false;
+    }
+
+    if (variableName.empty()) {
+        Runtime_t::GetInstance().getLogger().logWarning(
+            std::format("websocket variable chainge sent with a empty variable, invalid request. Entity name: {}",
+                entityName));
+        return false;
+    }
+    return true;
+}
+
+nlohmann::json  sim::framework::VisualizationHandler_t::formateWSVariableChangeMessage(websocketStateChangeData_t &data) {
+    return {
+        {"entityName", data.entityName},
+        {"variableName", data.variableName},
+        {"qualifiedVariableName", data.entityName + "::" + data.variableName},
+        {"data", data.data}
+    };
+}
+
+void sim::framework::VisualizationHandler_t::startWSChangeUpdateThread() {
+    if (m_websocketUpdateClientsThread.has_value())
+        throw std::logic_error("m_websocketUpdateClientsThread is already running");
+
+    m_websocketUpdateClientsThread.emplace([&](const std::stop_token& token) {
+        while (!token.stop_requested())
+            this->websocketProcessChangesThreadMain();
+    });
+}
+
 void sim::framework::visualizationProvider_t::registerApiCall(std::string apiName,
-    const std::function<crow::response(std::string)> &callback) const {
+                                                              const std::function<crow::response(std::string)> &callback) const {
     m_visualizationHandler.registerApiCall(m_entityID, apiName, callback);
+}
+
+void sim::framework::visualizationProvider_t::emmitVariableChange(const std::string &variableName,
+    const nlohmann::json &data) const {
+    m_visualizationHandler.commitWSVariableChange(m_entityName, variableName, data);
+}
+
+void sim::framework::visualizationProvider_t::emmitVariableChange(
+    const std::string &&variableName, const nlohmann::json &&data) const {
+    m_visualizationHandler.commitWSVariableChange(m_entityName, std::move(variableName), std::move(data));
+}
+
+void sim::framework::visualizationProvider_t::emmitVariableChange(const std::string &variableName,
+    const nlohmann::json &&data) const {
+    m_visualizationHandler.commitWSVariableChange(m_entityName, variableName, std::move(data));
 }
 
 uint32_t sim::framework::LoggerHandler_t::attachLogConsumer(LogConsumer_t &logConsumer) {
@@ -809,6 +895,7 @@ void sim::framework::Runtime_t::runtimeStart() {
         for (const runtimeEntityEntry & entry: m_entries) {
             entry.entity.cycle();
         }
+        m_visualizationHandler.dispatchVariableChange();
     }
 }
 
@@ -819,7 +906,7 @@ sim::framework::EntityID_t sim::framework::Runtime_t::registerEntity(runtimeEnti
         instance,
         IOProvider_t(m_entityIdCounter, m_ioHandler),
         TerminalProvider_t(m_entityIdCounter, m_terminalHandler),
-        visualizationProvider_t(m_entityIdCounter, m_visualizationHandler),
+        visualizationProvider_t(m_entityIdCounter, std::string(instanceName), m_visualizationHandler),
         EntityLogger_t(m_entityIdCounter, m_loggerHandler));
 
     return m_entityIdCounter++;
