@@ -345,6 +345,7 @@ namespace sim {
 
         void cycle() override {
             if (m_checkFunction && this->m_objectInterface) {
+                bool currentState = false;
                 if (this->m_objectInterface.value()->isElementPresent()) {
                     const T& sensorElement = this->m_objectInterface.value()->peek();
 
@@ -353,8 +354,15 @@ namespace sim {
 
                     if (m_onSensorTrueCallback && isSensorTrue)
                         (*m_onSensorTrueCallback)(sensorElement);
+
+                    currentState = true;
                 } else {
                     this->getIOProvider().writeOutput(m_outputIO, false);
+                }
+
+                if (m_lastState != currentState) {
+                    this->getVisualizationProvider().emmitVariableChange("output", {"state", currentState});
+                    m_lastState = currentState;
                 }
             }
         }
@@ -382,6 +390,8 @@ namespace sim {
         std::optional<std::function<bool(const T&)>> m_checkFunction;
         std::optional<std::function<void(const T&)>> m_onSensorTrueCallback;
         sim::framework::IoID_t m_outputIO = 0;
+
+        bool m_lastState = false;
     };
 
 }

@@ -47,7 +47,7 @@ int main(int argc, char** argv) {
 
     sim::digitalSensor_t<testObject_t> digitalSensor("digitalSensor");
 
-    digitalSensor.setOnSensorTrueCallback([](const testObject_t& obj){ std::cout << "TestEntityNum: " << obj.number << std::endl; });
+    //digitalSensor.setOnSensorTrueCallback([](const testObject_t& obj){ std::cout << "TestEntityNum: " << obj.number << std::endl; });
     digitalSensor.setSensorCheckFunction([](const testObject_t& obj) {return true;});
     digitalSensor.linkSensorInterface(conveyorBelt.getMountpointInterface(2));
 
