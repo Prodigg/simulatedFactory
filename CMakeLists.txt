@@ -8,9 +8,20 @@ list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 add_executable(simulatedFactory src/main.cpp
         src/Framework.h
         src/Framework.cpp
-        src/AdsVariableList.h
+        src/Framework/AdsVariableList.h
         src/osSpecific/LinuxSpecific.h
         src/stdMachines.h
+        src/Framework/IOsystem.h
+        src/Framework/RuntimeEntity.h
+        src/Framework/TerminalSystem.h
+        src/Framework/Log/LogConsumer.h
+        src/Framework/VisualizationSystem.h
+        src/Framework/Log/Log.h
+        src/Framework/RuntimeEntity.cpp
+        src/Framework/IOsystem.cpp
+        src/Framework/TerminalSystem.cpp
+        src/Framework/VisualizationSystem.cpp
+        src/Framework/Log/Log.cpp
 )
 
 find_package(AdsLib REQUIRED)

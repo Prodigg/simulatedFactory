@@ -361,7 +361,7 @@ namespace sim {
                 }
 
                 if (m_lastState != currentState) {
-                    this->getVisualizationProvider().emmitVariableChange("output", {"state", currentState});
+                    //this->getVisualizationProvider().emmitVariableChange("output", {"state", currentState});
                     m_lastState = currentState;
                 }
             }
