@@ -16,9 +16,12 @@ class testEntity_t : public sim::runtimeEntity_t {
             getLogger().logInfo(
                 std::format("testEntity::test: {}", testInputData));
         //this->getVisualizationProvider().emmitVariableChange("test", {"inputState", testInputData});
+            this->getVisualizationProvider().writeServerSymbol(serverSymbol, testInputData);
         });
+        serverSymbol = this->getVisualizationProvider().registerServerSymbol(false, "inputState");
     }
     private:
+    sim::framework::VisuID_t serverSymbol = 0;
     sim::framework::IoID_t testInput = 0;
 };
 

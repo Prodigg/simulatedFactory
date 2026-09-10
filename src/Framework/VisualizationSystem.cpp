@@ -155,6 +155,52 @@ void sim::framework::VisualizationHandler_t::dispatchVariableChange() {
     m_websocketProcessCondition.notify_all();
 }
 
+sim::framework::VisuID_t sim::framework::VisualizationHandler_t::registerServerSymbol(const EntityID_t entityID,
+    const std::string_view symbolName, const serverSymbolDetails_t& details, const nlohmann::json& initializationValue,
+    const nlohmann::json& typeSchema, std::optional<std::function<void(nlohmann::json)>> writeCallback) {
+
+    const VisuID_t newID = m_visuIDCounter++;
+
+    if (!m_registeredServerSymbols.contains(entityID))
+        m_registeredServerSymbols.emplace(entityID, registeredServerSymbolsStorage_t(Runtime_t::GetInstance().getEntityName(entityID)));
+
+    auto&[entityName, serverSymbols] = m_registeredServerSymbols.at(entityID);
+
+    if (std::ranges::find_if(
+        serverSymbols,
+        [&symbolName](const registeredServerSymbols_t &symbol) {
+            return symbol.name == symbolName;
+        }) != serverSymbols.end())
+        throw std::invalid_argument("Name of server symbol is already registered");
+
+    serverSymbols.emplace_back(
+        newID,
+        std::string(symbolName),
+        details,
+        initializationValue,
+        typeSchema,
+        writeCallback);
+    return newID;
+}
+
+bool sim::framework::VisualizationHandler_t::writeServerSymbol(EntityID_t entityID, VisuID_t visuID,
+    const nlohmann::json &value) {
+    if (!m_registeredServerSymbols.contains(entityID))
+        throw std::invalid_argument("unknown entity ID");
+
+    auto&[entityName, serverSymbols] = m_registeredServerSymbols.at(entityID);
+
+    const auto it = std::ranges::find_if(serverSymbols, [visuID](auto elem) {return elem.ID = visuID;});
+    if (it == serverSymbols.end())
+        throw std::invalid_argument("unknown visualization ID");
+
+    Runtime_t::GetInstance().getLogger().logWarning(std::format("Server Symbol write value is not checked against schema. EntityID={}, VisuID={}", entityID, visuID));
+    //TODO: add schema validation
+
+    commitWSVariableChange(entityName, it->name, value);
+    return true;
+}
+
 crow::response sim::framework::VisualizationHandler_t::generateServerError(size_t errorID,
                                                                            std::string_view errorMessage) {
     const json err = {
