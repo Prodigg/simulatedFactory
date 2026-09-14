@@ -49,6 +49,28 @@ void sim::framework::VisualizationHandler_t::initialize() {
         return future.get();
     });
 
+    CROW_ROUTE(m_app, "/serverSymbols/<string>")([this](const std::string& request) {
+        if (request == "list") {
+            std::shared_lock lock(m_registeredServerSymbolsMutex);
+            nlohmann::json json;
+            for (const auto &[entityName, serverSymbols]: m_registeredServerSymbols | std::views::values) {
+                for (const auto & symbol: serverSymbols) {
+                    json.emplace_back(nlohmann::json({
+                        {"symbolName", symbol.name},
+                        {"description", symbol.details.serverSymbolDescription}
+                    }));
+                }
+            }
+            return crow::response(200, "application/json", json.dump(3));
+        } else {
+            return crow::response(400, "unknown request");
+        }
+    });
+
+    CROW_ROUTE(m_app, "/serverSymbols/<string>/<string>") ([this](const std::string& request, const std::string& serverSymbol) {
+       return crow::response(501, "functionality currently not implemented");
+    });
+
     CROW_WEBSOCKET_ROUTE(m_app, "/ws")
             .onopen([&](crow::websocket::connection& conn){
                 std::scoped_lock mux(m_websocketClientMutex);
@@ -160,6 +182,8 @@ sim::framework::VisuID_t sim::framework::VisualizationHandler_t::registerServerS
     const nlohmann::json& typeSchema, std::optional<std::function<void(nlohmann::json)>> writeCallback) {
 
     const VisuID_t newID = m_visuIDCounter++;
+
+    std::unique_lock lock(m_registeredServerSymbolsMutex);
 
     if (!m_registeredServerSymbols.contains(entityID))
         m_registeredServerSymbols.emplace(entityID, registeredServerSymbolsStorage_t(Runtime_t::GetInstance().getEntityName(entityID)));

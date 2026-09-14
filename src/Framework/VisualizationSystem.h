@@ -9,6 +9,7 @@
 #include <crow.h>
 #include <queue>
 #include <unordered_set>
+#include <shared_mutex>
 
 #include "RuntimeEntity.h"
 #include "Log/LogConsumer.h"
@@ -199,6 +200,7 @@ namespace sim::framework {
             std::vector<registeredServerSymbols_t> serverSymbols;
         };
 
+        std::shared_mutex m_registeredServerSymbolsMutex;
         std::unordered_map<EntityID_t, registeredServerSymbolsStorage_t> m_registeredServerSymbols;
 
         //------------ Webserver ----------
