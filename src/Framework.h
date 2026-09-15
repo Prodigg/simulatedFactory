@@ -73,6 +73,8 @@ namespace sim::framework {
 
         std::optional<TerminalProvider_t> m_terminalProvider;
         VisualizationHandler_t m_visualizationHandler;
+
+        std::shared_mutex m_entitiesMutex;
         std::vector<runtimeEntityEntry> m_entries;
         EntityID_t m_entityIdCounter = 1; //! id counter for generating EntityIDs
         TerminalHandler_t m_terminalHandler;

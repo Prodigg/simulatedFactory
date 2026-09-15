@@ -65,6 +65,8 @@ void sim::framework::Runtime_t::runtimeStart() {
 }
 
 sim::framework::EntityID_t sim::framework::Runtime_t::registerEntity(runtimeEntity_t &instance, const std::string_view instanceName) {
+    std::unique_lock lock(m_entitiesMutex);
+
     m_entries.emplace_back(
         m_entityIdCounter,
         std::string(instanceName),
@@ -78,6 +80,8 @@ sim::framework::EntityID_t sim::framework::Runtime_t::registerEntity(runtimeEnti
 }
 
 sim::framework::runtimeEntityContext_t sim::framework::Runtime_t::getEntityContext(EntityID_t entityID) {
+    std::shared_lock lock(m_entitiesMutex);
+
     const auto it = std::ranges::find_if(m_entries, [entityID](const auto& entry) { return entry.entityID == entityID; });
 
     if (it == m_entries.end())
@@ -93,6 +97,8 @@ sim::framework::runtimeEntityContext_t sim::framework::Runtime_t::getEntityConte
 }
 
 std::string sim::framework::Runtime_t::getEntityName(EntityID_t entityID) {
+    std::shared_lock lock(m_entitiesMutex);
+
     if (entityID == 0)
         return "runtime";
     if (const auto it = std::ranges::find_if(m_entries, [entityID](const auto& entry) { return entry.entityID == entityID; }); it != m_entries.end())
@@ -101,6 +107,8 @@ std::string sim::framework::Runtime_t::getEntityName(EntityID_t entityID) {
 }
 
 sim::framework::EntityID_t sim::framework::Runtime_t::getEntityID(std::string entityName) {
+    std::shared_lock lock(m_entitiesMutex);
+
     if (entityName == "runtime")
         return 0;
     if (const auto it = std::ranges::find_if(m_entries, [entityName](const auto& entry) { return entry.entityName == entityName; }); it != m_entries.end())

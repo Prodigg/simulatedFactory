@@ -57,7 +57,7 @@ void sim::framework::VisualizationHandler_t::initialize() {
                 for (const auto & symbol: serverSymbols) {
                     json.emplace_back(nlohmann::json({
                         {"symbolName", symbol.name},
-                        {"description", symbol.details.serverSymbolDescription}
+                        {"fullyQualifiedName", symbol.fullyQualifiedName}
                     }));
                 }
             }
@@ -68,7 +68,66 @@ void sim::framework::VisualizationHandler_t::initialize() {
     });
 
     CROW_ROUTE(m_app, "/serverSymbols/<string>/<string>") ([this](const std::string& request, const std::string& serverSymbol) {
-       return crow::response(501, "functionality currently not implemented");
+        std::pair<std::string, std::string> parsedServerSymbol;
+        try {
+            parsedServerSymbol = parseFullyQualifiedSymbolName(serverSymbol);
+
+        } catch (std::invalid_argument& e) {
+            return crow::response(400, "malformed server symbol");
+        }
+
+        EntityID_t serverSymbolEntityID;
+        try {
+            serverSymbolEntityID = Runtime_t::GetInstance().getEntityID(parsedServerSymbol.first);
+        } catch (std::runtime_error &e) {
+            return crow::response(400, "unknown entity name");
+        }
+
+        std::shared_lock lock(m_registeredServerSymbolsMutex);
+        const auto &[entityName, serverSymbols] = m_registeredServerSymbols.at(serverSymbolEntityID);
+
+        const auto it = std::ranges::find_if(serverSymbols, [&](const registeredServerSymbols_t &symbol) {
+            return symbol.fullyQualifiedName == serverSymbol;
+        });
+
+        if (it == serverSymbols.end()) {
+            return crow::response(400, "unknown server symbol name");
+        }
+
+        const registeredServerSymbols_t& symbolData = *it;
+
+        if (request == "getDetails") {
+            const nlohmann::json json = {
+                {"fullyQualifiedName", symbolData.fullyQualifiedName},
+                {"symbolName", symbolData.name},
+                {
+                    "details", {
+                        {"description", symbolData.details.serverSymbolDescription},
+                        {"allowSubsymbolAccess", symbolData.details.allowSubsymbolAccess},
+                        {"readOnly", symbolData.details.readOnly},
+                        {"writeOnly", symbolData.details.writeOnly}
+                    }
+                }
+            };
+            return crow::response(200, "application/json", json.dump(3));
+        }
+        if (request == "getInitialValue") {
+            return crow::response(200, "application/json", symbolData.initializationValue.dump(3));
+        }
+        if (request == "getTypeSchema") {
+            std::shared_lock lockTypes(m_serverSymbolTypesMutex);
+            try {
+                const nlohmann::json &typeShema = m_serverSymbolTypes.at(symbolData.typeSchemaName);
+                const nlohmann::json json = {
+                    {"schemaName", symbolData.typeSchemaName},
+                    {"schema", typeShema}
+                };
+                return crow::response(200, "application/json", json.dump(3));
+            } catch (std::out_of_range& e) {
+                return crow::response(500, "failed to resolve schema type of id: " + symbolData.typeSchemaName);
+            }
+        }
+        return crow::response(400, "unknown request");
     });
 
     CROW_WEBSOCKET_ROUTE(m_app, "/ws")
@@ -200,9 +259,10 @@ sim::framework::VisuID_t sim::framework::VisualizationHandler_t::registerServerS
     serverSymbols.emplace_back(
         newID,
         std::string(symbolName),
+        std::string(entityName + "." + symbolName),
         details,
         initializationValue,
-        typeSchema,
+        storeServerSymbolTypeShema(typeSchema),
         writeCallback);
     return newID;
 }
@@ -221,7 +281,7 @@ bool sim::framework::VisualizationHandler_t::writeServerSymbol(EntityID_t entity
     Runtime_t::GetInstance().getLogger().logWarning(std::format("Server Symbol write value is not checked against schema. EntityID={}, VisuID={}", entityID, visuID));
     //TODO: add schema validation
 
-    commitWSVariableChange(entityName, it->name, value);
+    commitWSVariableChange(it->fullyQualifiedName, value);
     return true;
 }
 
@@ -312,28 +372,10 @@ void sim::framework::VisualizationHandler_t::commitWSVariableChange(websocketSta
     m_websocketChangeBuffer.push_back(std::move(data));
 }
 
-bool sim::framework::VisualizationHandler_t::checkWSVariableChangeValid(std::string_view entityName, std::string_view variableName) {
-    if (entityName.empty()) {
-        Runtime_t::GetInstance().getLogger().logError(
-            std::format("websocket update origin entity empty invalid request. Variable name: {}",
-                variableName));
-        return false;
-    }
-
-    if (variableName.empty()) {
-        Runtime_t::GetInstance().getLogger().logWarning(
-            std::format("websocket variable chainge sent with a empty variable, invalid request. Entity name: {}",
-                entityName));
-        return false;
-    }
-    return true;
-}
 
 nlohmann::json  sim::framework::VisualizationHandler_t::formateWSVariableChangeMessage(websocketStateChangeData_t &data) {
     return {
-        {"entityName", data.entityName},
-        {"variableName", data.variableName},
-        {"qualifiedVariableName", data.entityName + "::" + data.variableName},
+        {"qualifiedVariableName", data.fullyQualifiedName},
         {"data", data.data}
     };
 }
@@ -346,6 +388,25 @@ void sim::framework::VisualizationHandler_t::startWSChangeUpdateThread() {
         while (!token.stop_requested())
             this->websocketProcessChangesThreadMain();
     });
+}
+
+std::pair<std::string, std::string> sim::framework::VisualizationHandler_t::parseFullyQualifiedSymbolName(
+    const std::string_view symbolName) {
+    const size_t delimiterIndex = symbolName.find_first_of('.');
+
+    if (delimiterIndex == std::string::npos)
+        throw std::invalid_argument("symbol name doesnt contain a dot");
+
+    return {std::string(symbolName.substr(0, delimiterIndex)), std::string(symbolName.substr(delimiterIndex + 1))};
+}
+
+std::string sim::framework::VisualizationHandler_t::storeServerSymbolTypeShema(const nlohmann::json &typeShema) {
+    const std::string hash = std::format("{:x}", std::hash<std::string>()(typeShema.dump()));
+    std::unique_lock lock(m_serverSymbolTypesMutex);
+
+    const auto [it, inserted] = m_serverSymbolTypes.try_emplace(hash, typeShema);
+
+    return it->first;
 }
 
 void sim::framework::visualizationProvider_t::registerApiCall(std::string apiName,

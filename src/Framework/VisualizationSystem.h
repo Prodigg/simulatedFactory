@@ -63,38 +63,29 @@ namespace sim::framework {
 
         /*!
          * @brief send data to the websocket clients
-         * @param entityName name of the entity that rapports the change
-         * @param variableName the variable name of the entity (this is arbitrary) an empty string makes the request invalid and will be discarded
+         * @param fullyQualifiedName fully qualified name of serverVariable
          * @param data arbitrary data the entity wants to send
          */
-        void commitWSVariableChange(const std::string& entityName, const std::string& variableName, const nlohmann::json& data) {
-            if (!checkWSVariableChangeValid(entityName, variableName))
-                return;
-            commitWSVariableChange(websocketStateChangeData_t{entityName, variableName, data});
+        void commitWSVariableChange(const std::string& fullyQualifiedName, const nlohmann::json& data) {
+            commitWSVariableChange(websocketStateChangeData_t{fullyQualifiedName, data});
         }
 
         /*!
          * @brief send data to the websocket clients
-         * @param entityName name of the entity that rapports the change
-         * @param variableName the variable name of the entity (this is arbitrary) an empty string makes the request invalid and will be discarded
+         * @param fullyQualifiedName fully qualified name of serverVariable
          * @param data arbitrary data the entity wants to send
          */
-        void commitWSVariableChange(const std::string& entityName, std::string&& variableName, nlohmann::json&& data) {
-            if (!checkWSVariableChangeValid(entityName, variableName))
-                return;
-            commitWSVariableChange(websocketStateChangeData_t{entityName, std::move(variableName), std::move(data)});
+        void commitWSVariableChange(std::string&& fullyQualifiedName, nlohmann::json&& data) {
+            commitWSVariableChange(websocketStateChangeData_t{std::move(fullyQualifiedName), std::move(data)});
         }
 
         /*!
          * @brief send data to the websocket clients
-         * @param entityName name of the entity that rapports the change
-         * @param variableName the variable name of the entity (this is arbitrary) an empty string makes the request invalid and will be discarded
+         * @param fullyQualifiedName fully qualified name of serverVariable
          * @param data arbitrary data the entity wants to send
          */
-        void commitWSVariableChange(const std::string& entityName, const std::string& variableName, nlohmann::json&& data) {
-            if (checkWSVariableChangeValid(entityName, variableName))
-                return;
-            commitWSVariableChange(websocketStateChangeData_t{entityName, variableName, std::move(data)});
+        void commitWSVariableChange(const std::string& fullyQualifiedName, nlohmann::json&& data) {
+            commitWSVariableChange(websocketStateChangeData_t{fullyQualifiedName, std::move(data)});
         }
 
         /*!
@@ -154,14 +145,11 @@ namespace sim::framework {
         };
 
         struct websocketStateChangeData_t {
-            std::string entityName;
-            std::string variableName;
+            std::string fullyQualifiedName;
             nlohmann::json data;
         };
 
         void commitWSVariableChange(websocketStateChangeData_t&& data);
-
-        [[nodiscard]] static bool checkWSVariableChangeValid(std::string_view entityName, std::string_view variableName);
 
         /*!
          * @brief formate ws variable change message
@@ -174,6 +162,21 @@ namespace sim::framework {
         * @throws std::logic_error when thread has already been started
         */
         void startWSChangeUpdateThread();
+
+        /*!
+         * @brief parses the fully qualified name of a server symbol
+         * @throws std::invalid_argument if symbolName is not parsable
+         * @param symbolName fully qualified name to parse
+         * @return first: entityName second: symbolName
+         */
+        static std::pair<std::string, std::string> parseFullyQualifiedSymbolName(std::string_view symbolName);
+
+        /*!
+         * @brief inserts a type shema into the typeShema storage. This generates an access name.
+         * @param typeShema json type shema
+         * @return fully qualified name of typeShema
+         */
+        std::string storeServerSymbolTypeShema(const nlohmann::json& typeShema);
 
         VisuID_t m_visuIDCounter = 1;
 
@@ -189,9 +192,10 @@ namespace sim::framework {
         struct registeredServerSymbols_t {
             VisuID_t ID;
             std::string name;
+            std::string fullyQualifiedName;
             serverSymbolDetails_t details;
             nlohmann::json initializationValue;
-            nlohmann::json typeSchema;
+            std::string typeSchemaName;
             std::optional<std::function<void(nlohmann::json)>> writeCallback;
         };
 
@@ -202,6 +206,9 @@ namespace sim::framework {
 
         std::shared_mutex m_registeredServerSymbolsMutex;
         std::unordered_map<EntityID_t, registeredServerSymbolsStorage_t> m_registeredServerSymbols;
+
+        std::shared_mutex m_serverSymbolTypesMutex;
+        std::unordered_map<std::string, nlohmann::json> m_serverSymbolTypes;
 
         //------------ Webserver ----------
         crow::SimpleApp m_app;
