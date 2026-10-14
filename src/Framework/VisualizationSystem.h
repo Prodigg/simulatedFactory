@@ -126,9 +126,7 @@ namespace sim::framework {
 
         void handleSingleRequest();
 
-        void startWebserver() {
-            m_app.port(18080).loglevel(crow::LogLevel::Warning).multithreaded().run_async();
-        }
+        void startWebserver();
 
         void websocketProcessChangesThreadMain();
 
@@ -179,6 +177,15 @@ namespace sim::framework {
         std::string storeServerSymbolTypeShema(const nlohmann::json& typeShema);
 
         VisuID_t m_visuIDCounter = 1;
+
+        // ----------- crow error handler ---------
+
+        class CrowLogger_t : public crow::ILogHandler {
+        public:
+            void log(const std::string& message, crow::LogLevel level) final;
+        };
+
+        CrowLogger_t m_crowLogger;
 
         //------------ REST API ----------
         std::mutex m_requestQueueMutex;

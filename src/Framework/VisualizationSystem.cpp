@@ -8,6 +8,7 @@ using json = nlohmann::json;
 
 void sim::framework::VisualizationHandler_t::initialize() {
     using namespace std::chrono_literals;
+    crow::logger::setHandler(&m_crowLogger);
 
     CROW_ROUTE(m_app, "/api/status")([](){
         crow::json::wvalue json;
@@ -132,8 +133,11 @@ void sim::framework::VisualizationHandler_t::initialize() {
 
     CROW_WEBSOCKET_ROUTE(m_app, "/ws")
             .onopen([&](crow::websocket::connection& conn){
-                std::scoped_lock mux(m_websocketClientMutex);
-                m_websocketClients.emplace(&conn);
+                {
+                    std::scoped_lock mux(m_websocketClientMutex);
+                   m_websocketClients.emplace(&conn);
+                }
+                Runtime_t::GetInstance().getLogger().logInfo(std::format("Websocket Log connection opened to: {}", conn.get_remote_ip()));
             })
             .onclose([&](crow::websocket::connection& conn, const std::string& reason, uint16_t){
                 {
@@ -167,7 +171,7 @@ void sim::framework::VisualizationHandler_t::initialize() {
                 conn.close();
             })
             .onmessage([&](crow::websocket::connection& conn, const std::string& data, const bool is_binary){
-                Runtime_t::GetInstance().getLogger().logWarning(std::format("Closing Websocket Log Connection due to client writing to it ({})", conn.get_remote_ip()));
+                Runtime_t::GetInstance().getLogger().logWarning(std::format("Closing Websocket Log Connection due to client writing t_o it ({})", conn.get_remote_ip()));
                 conn.close("route is only for receiving logs", crow::websocket::CloseStatusCode::UnacceptableData);
             });
 }
@@ -274,7 +278,7 @@ bool sim::framework::VisualizationHandler_t::writeServerSymbol(EntityID_t entity
 
     auto&[entityName, serverSymbols] = m_registeredServerSymbols.at(entityID);
 
-    const auto it = std::ranges::find_if(serverSymbols, [visuID](auto elem) {return elem.ID = visuID;});
+    const auto it = std::ranges::find_if(serverSymbols, [visuID](auto elem) {return elem.ID == visuID;});
     if (it == serverSymbols.end())
         throw std::invalid_argument("unknown visualization ID");
 
@@ -347,6 +351,12 @@ void sim::framework::VisualizationHandler_t::handleSingleRequest() {
     m_handleQueue.pop();
 }
 
+void sim::framework::VisualizationHandler_t::startWebserver() {
+    //TODO: make port configurable
+    Runtime_t::GetInstance().getLogger().logInfo("Started Webserver on 18080");
+    m_app.port(18080).loglevel(crow::LogLevel::Warning).multithreaded().run_async();
+}
+
 void sim::framework::VisualizationHandler_t::websocketProcessChangesThreadMain() {
     std::unique_lock cvMux(m_websocketProcessMutex);
     m_websocketProcessCondition.wait(cvMux);
@@ -407,6 +417,32 @@ std::string sim::framework::VisualizationHandler_t::storeServerSymbolTypeShema(c
     const auto [it, inserted] = m_serverSymbolTypes.try_emplace(hash, typeShema);
 
     return it->first;
+}
+
+void sim::framework::VisualizationHandler_t::CrowLogger_t::log(const std::string &message, const crow::LogLevel level) {
+    auto& logger = Runtime_t::GetInstance().getLogger();
+    switch (level)
+    {
+        case crow::LogLevel::Debug:
+            logger.logDebug(message);
+            break;
+
+        case crow::LogLevel::Info:
+            logger.logInfo(message);
+            break;
+
+        case crow::LogLevel::Warning:
+            logger.logWarning(message);
+            break;
+
+        case crow::LogLevel::Error:
+            logger.logError(message);
+            break;
+
+        case crow::LogLevel::Critical:
+            logger.logCritical(message);
+            break;
+    }
 }
 
 void sim::framework::visualizationProvider_t::registerApiCall(std::string apiName,
